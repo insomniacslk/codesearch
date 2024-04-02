@@ -168,10 +168,10 @@ var searchCmd = &cobra.Command{
 		totalTime := time.Since(searchStart)
 		if flagStats {
 			for _, st := range stats {
-				fmt.Printf("Searching on %q took %s for %d results\n", st.name, st.duration, st.results)
+				fmt.Printf("Got %d results on %q in %s\n", st.results, st.name, st.duration)
 			}
 		}
-		fmt.Printf("Total time for %d results: %s\n", totalResults, totalTime)
+		fmt.Printf("Got %d total results in %s\n", totalResults, totalTime)
 	},
 }
 

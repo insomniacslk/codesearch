@@ -197,16 +197,19 @@ func (g *Gitlab) toResult(client *gitlab.Client, searchString string, blobs []*g
 			line          string
 		)
 		if startOffset == -1 {
-			logrus.Warningf("Search string not found in results, this should not happen")
-		} else {
-			lines := strings.Split(blob.Data, "\n")
-			linenoInBlob := strings.Count(blob.Data[:startOffset], "\n")
-			line = lines[linenoInBlob]
-			start = strings.Index(strings.ToLower(line), strings.ToLower(searchString))
-			end = start + len(searchString)
-			before = lines[:linenoInBlob]
-			after = lines[linenoInBlob:]
+			// The search string is part of the file name rather than the file
+			// content.
+			// TODO file name search is not implemented yet, so this is just
+			//      ignored for now
+			continue
 		}
+		lines := strings.Split(blob.Data, "\n")
+		linenoInBlob := strings.Count(blob.Data[:startOffset], "\n")
+		line = lines[linenoInBlob]
+		start = strings.Index(strings.ToLower(line), strings.ToLower(searchString))
+		end = start + len(searchString)
+		before = lines[:linenoInBlob]
+		after = lines[linenoInBlob:]
 		results = append(results, Result{
 			Backend:   g.Name(),
 			Line:      line,
