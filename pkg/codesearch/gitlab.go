@@ -111,11 +111,11 @@ func (g *Gitlab) Search(searchString string, opts ...Opt) (Results, error) {
 			if err != nil {
 				return nil, fmt.Errorf("failed to search blobs by project: %w", err)
 			}
+			sopts.Page = response.NextPage
+			blobs = append(blobs, someBlobs...)
 			if response.NextPage == 0 {
 				break
 			}
-			sopts.Page = response.NextPage
-			blobs = append(blobs, someBlobs...)
 		}
 	} else if g.project != "" {
 		// get project ID
@@ -139,11 +139,11 @@ func (g *Gitlab) Search(searchString string, opts ...Opt) (Results, error) {
 			if err != nil {
 				return nil, fmt.Errorf("failed to search blobs by group: %w", err)
 			}
+			sopts.Page = response.NextPage
+			blobs = append(blobs, someBlobs...)
 			if response.NextPage == 0 {
 				break
 			}
-			sopts.Page = response.NextPage
-			blobs = append(blobs, someBlobs...)
 		}
 	} else {
 		sopts := gitlab.SearchOptions{ListOptions: gitlab.ListOptions{PerPage: 100}}
@@ -153,11 +153,11 @@ func (g *Gitlab) Search(searchString string, opts ...Opt) (Results, error) {
 			if err != nil {
 				return nil, fmt.Errorf("failed to search blobs: %w", err)
 			}
+			sopts.Page = response.NextPage
+			blobs = append(blobs, someBlobs...)
 			if response.NextPage == 0 {
 				break
 			}
-			sopts.Page = response.NextPage
-			blobs = append(blobs, someBlobs...)
 		}
 	}
 	return g.toResult(client, searchString, blobs)

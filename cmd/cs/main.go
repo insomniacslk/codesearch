@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/fatih/color"
 	"github.com/insomniacslk/codesearch/pkg/codesearch"
@@ -19,6 +20,7 @@ var (
 
 	configFile string
 	flagDebug  bool
+	flagStats  bool
 
 	searchBackends string
 
@@ -36,6 +38,7 @@ func init() {
 
 	rootCmd.PersistentFlags().StringVarP(&configFile, "config", "c", "", "Configuration file")
 	rootCmd.PersistentFlags().BoolVarP(&flagDebug, "debug", "d", false, "Print debug messages")
+	rootCmd.PersistentFlags().BoolVarP(&flagStats, "stats", "S", false, "Print stats")
 
 	searchCmd.PersistentFlags().StringVarP(&searchBackends, "backends", "b", "", "Comma-separated list of names of the backends to use. The names are defined in your configuration file. If specified, it overrides `default_backends` in the configuration file. \"all\" will use every backend")
 
@@ -129,11 +132,26 @@ var searchCmd = &cobra.Command{
 			}
 			backends = append(backends, backend)
 		}
+		type stat struct {
+			name     string
+			duration time.Duration
+			results  int
+		}
+		stats := make([]stat, 0, len(backends))
+		searchStart := time.Now()
+		totalResults := 0
 		for _, b := range backends {
+			start := time.Now()
 			results, err := b.Search(searchString)
 			if err != nil {
 				logrus.Fatalf("Failed to search with backend %q: %v", b.Name(), err)
 			}
+			totalResults += len(results)
+			stats = append(stats, stat{
+				name:     b.Name(),
+				duration: time.Since(start),
+				results:  len(results),
+			})
 			for _, res := range results {
 				start, end := res.Highlight[0], res.Highlight[1]
 				fmt.Printf(
@@ -147,6 +165,13 @@ var searchCmd = &cobra.Command{
 				)
 			}
 		}
+		totalTime := time.Since(searchStart)
+		if flagStats {
+			for _, st := range stats {
+				fmt.Printf("Searching on %q took %s for %d results\n", st.name, st.duration, st.results)
+			}
+		}
+		fmt.Printf("Total time for %d results: %s\n", totalResults, totalTime)
 	},
 }
 
