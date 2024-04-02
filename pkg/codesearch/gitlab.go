@@ -84,11 +84,11 @@ func (g *Gitlab) Search(searchString string, opts ...Opt) (Results, error) {
 		return nil, fmt.Errorf("failed to set up Gitlab client: %w", err)
 	}
 	var (
-		blobs    []*gitlab.Blob
-		response *gitlab.Response
+		blobs []*gitlab.Blob
 	)
 	if g.group != "" {
 		// get group ID
+		// XXX Should this request be paginated as well?
 		groups, response, err := client.Groups.ListGroups(&gitlab.ListGroupsOptions{})
 		logrus.Debugf("Search.ListGroups response: %+v", response)
 		if err != nil {
@@ -104,13 +104,22 @@ func (g *Gitlab) Search(searchString string, opts ...Opt) (Results, error) {
 		if groupID == -1 {
 			return nil, fmt.Errorf("group %q not found", g.group)
 		}
-		blobs, response, err = client.Search.BlobsByGroup(groupID, searchString, &gitlab.SearchOptions{})
-		logrus.Debugf("Search.BlobsByGroup response: %+v", response)
-		if err != nil {
-			return nil, fmt.Errorf("failed to search blobs by project: %w", err)
+		sopts := gitlab.SearchOptions{ListOptions: gitlab.ListOptions{PerPage: 100}}
+		for {
+			someBlobs, response, err := client.Search.BlobsByGroup(groupID, searchString, &sopts)
+			logrus.Debugf("Search.BlobsByGroup response: %+v", response)
+			if err != nil {
+				return nil, fmt.Errorf("failed to search blobs by project: %w", err)
+			}
+			if response.NextPage == 0 {
+				break
+			}
+			sopts.Page = response.NextPage
+			blobs = append(blobs, someBlobs...)
 		}
 	} else if g.project != "" {
 		// get project ID
+		// XXX Should this request be paginated as well?
 		projects, response, err := client.Projects.ListProjects(&gitlab.ListProjectsOptions{})
 		logrus.Debugf("Search.ListProjects response: %+v", response)
 		if err != nil {
@@ -123,16 +132,32 @@ func (g *Gitlab) Search(searchString string, opts ...Opt) (Results, error) {
 				break
 			}
 		}
-		blobs, response, err = client.Search.BlobsByProject(projectID, searchString, &gitlab.SearchOptions{})
-		logrus.Debugf("Search.BlobsByProject response: %+v", response)
-		if err != nil {
-			return nil, fmt.Errorf("failed to search blobs by group: %w", err)
+		sopts := gitlab.SearchOptions{ListOptions: gitlab.ListOptions{PerPage: 100}}
+		for {
+			someBlobs, response, err := client.Search.BlobsByProject(projectID, searchString, &sopts)
+			logrus.Debugf("Search.BlobsByProject response: %+v", response)
+			if err != nil {
+				return nil, fmt.Errorf("failed to search blobs by group: %w", err)
+			}
+			if response.NextPage == 0 {
+				break
+			}
+			sopts.Page = response.NextPage
+			blobs = append(blobs, someBlobs...)
 		}
 	} else {
-		blobs, response, err = client.Search.Blobs(searchString, &gitlab.SearchOptions{})
-		logrus.Debugf("Search.Blobs response: %+v", response)
-		if err != nil {
-			return nil, fmt.Errorf("failed to search blobs: %w", err)
+		sopts := gitlab.SearchOptions{ListOptions: gitlab.ListOptions{PerPage: 100}}
+		for {
+			someBlobs, response, err := client.Search.Blobs(searchString, &sopts)
+			logrus.Debugf("Search.Blobs response: %+v", response)
+			if err != nil {
+				return nil, fmt.Errorf("failed to search blobs: %w", err)
+			}
+			if response.NextPage == 0 {
+				break
+			}
+			sopts.Page = response.NextPage
+			blobs = append(blobs, someBlobs...)
 		}
 	}
 	return g.toResult(client, searchString, blobs)
