@@ -86,30 +86,28 @@ var searchCmd = &cobra.Command{
 	Args:  cobra.MinimumNArgs(1),
 	Run: func(cmd *cobra.Command, args []string) {
 		config := getConfig()
-		var defaultBackends []string
-		for _, b := range config.DefaultBackends {
+
+		// get backends. Command line overrides config file, and "all" expands
+		// to all known backends in the config file.
+		var backendsToValidate = config.DefaultBackends
+		if searchBackends != "" {
+			backendsToValidate = strings.Split(searchBackends, ",")
+		}
+		var backendNames []string
+		for _, b := range backendsToValidate {
 			// Config.Validate has already ensured that there is either "all" or
 			// individual backend names.
 			if b == "all" {
-				// clear out defaultBackends in case other backends were
+				// clear out backendNames in case other backends were
 				// appended
-				defaultBackends = make([]string, 0, len(config.Backends))
+				backendNames = make([]string, 0, len(config.Backends))
 				for name := range config.Backends {
-					defaultBackends = append(defaultBackends, name)
+					backendNames = append(backendNames, name)
 				}
 				break
 			} else {
-				defaultBackends = append(defaultBackends, b)
+				backendNames = append(backendNames, b)
 			}
-		}
-		var backendNames []string
-		if searchBackends == "" {
-			// no override from command line, use default backends
-			backendNames = defaultBackends
-		} else {
-			// backends overridden from command line
-			backendNames = strings.Split(searchBackends, ",")
-			// TODO remove duplicates
 		}
 		searchString := strings.Join(args, " ")
 		fmt.Printf("Searching %q on %q\n", searchString, backendNames)
