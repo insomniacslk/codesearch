@@ -3,6 +3,7 @@ package codesearch
 import (
 	"fmt"
 	"net/url"
+	"strings"
 
 	"github.com/sirupsen/logrus"
 	gitlab "github.com/xanzy/go-gitlab"
@@ -61,8 +62,7 @@ func (g *Gitlab) Type() string {
 	return BackendTypeGitlab
 }
 
-func (g *Gitlab) Search(terms string, opts ...Opt) (Results, error) {
-	searchstring := terms
+func (g *Gitlab) Search(searchString string, opts ...Opt) (Results, error) {
 	for _, opt := range opts {
 		opt(g)
 	}
@@ -104,7 +104,7 @@ func (g *Gitlab) Search(terms string, opts ...Opt) (Results, error) {
 		if groupID == -1 {
 			return nil, fmt.Errorf("group %q not found", g.group)
 		}
-		blobs, response, err = client.Search.BlobsByGroup(groupID, searchstring, &gitlab.SearchOptions{})
+		blobs, response, err = client.Search.BlobsByGroup(groupID, searchString, &gitlab.SearchOptions{})
 		logrus.Debugf("Search.BlobsByGroup response: %+v", response)
 		if err != nil {
 			return nil, fmt.Errorf("failed to search blobs by project: %w", err)
@@ -123,22 +123,22 @@ func (g *Gitlab) Search(terms string, opts ...Opt) (Results, error) {
 				break
 			}
 		}
-		blobs, response, err = client.Search.BlobsByProject(projectID, searchstring, &gitlab.SearchOptions{})
+		blobs, response, err = client.Search.BlobsByProject(projectID, searchString, &gitlab.SearchOptions{})
 		logrus.Debugf("Search.BlobsByProject response: %+v", response)
 		if err != nil {
 			return nil, fmt.Errorf("failed to search blobs by group: %w", err)
 		}
 	} else {
-		blobs, response, err = client.Search.Blobs(searchstring, &gitlab.SearchOptions{})
+		blobs, response, err = client.Search.Blobs(searchString, &gitlab.SearchOptions{})
 		logrus.Debugf("Search.Blobs response: %+v", response)
 		if err != nil {
 			return nil, fmt.Errorf("failed to search blobs: %w", err)
 		}
 	}
-	return g.toResult(client, blobs)
+	return g.toResult(client, searchString, blobs)
 }
 
-func (g *Gitlab) toResult(client *gitlab.Client, blobs []*gitlab.Blob) (Results, error) {
+func (g *Gitlab) toResult(client *gitlab.Client, searchString string, blobs []*gitlab.Blob) (Results, error) {
 	var (
 		results  Results
 		projects = make(map[int]*gitlab.Project, 0)
@@ -149,7 +149,7 @@ func (g *Gitlab) toResult(client *gitlab.Client, blobs []*gitlab.Blob) (Results,
 		logrus.Debugf("  Data: %s:", blob.Data)
 		logrus.Debugf("  Path: %s:", blob.Path)
 		logrus.Debugf("  Filename: %s:", blob.Filename)
-		logrus.Debugf("  ID: %s:", blob.ID)
+		logrus.Debugf("  ID: %s", blob.ID)
 		logrus.Debugf("  Ref: %s", blob.Ref)
 		logrus.Debugf("  Startline: %d", blob.Startline)
 		logrus.Debugf("  ProjectID: %d", blob.ProjectID)
@@ -162,18 +162,35 @@ func (g *Gitlab) toResult(client *gitlab.Client, blobs []*gitlab.Blob) (Results,
 			}
 			projects[blob.ProjectID] = project
 		}
-		logrus.Debugf("  Project Name: %s", projects[blob.ProjectID])
+		logrus.Debugf("  Project Name: %s", projects[blob.ProjectID].Name)
 
 		project := projects[blob.ProjectID]
+		startOffset := strings.Index(strings.ToLower(blob.Data), strings.ToLower(searchString))
+		var (
+			start, end    int
+			before, after []string
+			line          string
+		)
+		if startOffset == -1 {
+			logrus.Warningf("Search string not found in results, this should not happen")
+		} else {
+			lines := strings.Split(blob.Data, "\n")
+			linenoInBlob := strings.Count(blob.Data[:startOffset], "\n")
+			line = lines[linenoInBlob]
+			start = strings.Index(strings.ToLower(line), strings.ToLower(searchString))
+			end = start + len(searchString)
+			before = lines[:linenoInBlob]
+			after = lines[linenoInBlob:]
+		}
 		results = append(results, Result{
 			Backend:   g.Name(),
-			Line:      blob.Data,
+			Line:      line,
 			Lineno:    blob.Startline,
-			Context:   ResultContext{},
-			Highlight: [2]int{0, 0},
+			Context:   ResultContext{Before: before, After: after},
+			Highlight: [2]int{start, end},
 			Path:      blob.Path,
 			RepoURL:   project.WebURL,
-			FileURL:   fmt.Sprintf("%s/-/blob/%s/%s", project.WebURL, project.DefaultBranch, blob.Path),
+			FileURL:   fmt.Sprintf("%s/-/blob/%s/%s#L%d", project.WebURL, project.DefaultBranch, blob.Path, blob.Startline),
 			Owner:     project.Namespace.Path,
 			RepoName:  project.Path,
 			Branch:    project.DefaultBranch,

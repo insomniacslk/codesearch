@@ -137,10 +137,11 @@ var searchCmd = &cobra.Command{
 			for _, res := range results {
 				start, end := res.Highlight[0], res.Highlight[1]
 				fmt.Printf(
-					"%s:%s:%s\n%s: %s\n\n",
+					"%s:%s:%s (%s)\n%s: %s\n\n",
 					res.Backend,
 					textBold.Sprint(toAnsiURL(res.RepoURL, res.Owner+"/"+res.RepoName)),
 					textBold.Sprint(toAnsiURL(res.FileURL, res.Path)),
+					textBold.Sprint(res.Branch),
 					textBoldGreen.Sprint(res.Lineno),
 					res.Line[:start]+textBoldRed.Sprint(res.Line[start:end])+res.Line[end:],
 				)
