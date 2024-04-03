@@ -18,10 +18,10 @@ const progname = "cs"
 var (
 	globalConfig codesearch.Config
 
-	configFile         string
-	flagDebug          bool
-	flagStats          bool
-	flagMatchFilenames bool
+	configFile            string
+	flagDebug             bool
+	flagStats             bool
+	flagSearchInFilenames bool
 
 	searchBackends string
 
@@ -40,7 +40,7 @@ func init() {
 	rootCmd.PersistentFlags().StringVarP(&configFile, "config", "c", "", "Configuration file")
 	rootCmd.PersistentFlags().BoolVarP(&flagDebug, "debug", "d", false, "Print debug messages")
 	rootCmd.PersistentFlags().BoolVarP(&flagStats, "stats", "S", false, "Print stats")
-	rootCmd.PersistentFlags().BoolVarP(&flagMatchFilenames, "match-filenames", "F", false, "Search only in file names")
+	rootCmd.PersistentFlags().BoolVarP(&flagSearchInFilenames, "search-in-filenames", "F", false, "Search only in file names")
 
 	searchCmd.PersistentFlags().StringVarP(&searchBackends, "backends", "b", "", "Comma-separated list of names of the backends to use. The names are defined in your configuration file. If specified, it overrides `default_backends` in the configuration file. \"all\" will use every backend")
 
@@ -153,7 +153,7 @@ var searchCmd = &cobra.Command{
 				results:  len(results),
 			})
 			for _, res := range results {
-				if flagMatchFilenames {
+				if flagSearchInFilenames {
 					fmt.Printf(
 						"%s:%s:%s (%s)\n\n",
 						res.Backend,
