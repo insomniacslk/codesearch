@@ -18,9 +18,10 @@ const progname = "cs"
 var (
 	globalConfig codesearch.Config
 
-	configFile string
-	flagDebug  bool
-	flagStats  bool
+	configFile         string
+	flagDebug          bool
+	flagStats          bool
+	flagMatchFilenames bool
 
 	searchBackends string
 
@@ -39,6 +40,7 @@ func init() {
 	rootCmd.PersistentFlags().StringVarP(&configFile, "config", "c", "", "Configuration file")
 	rootCmd.PersistentFlags().BoolVarP(&flagDebug, "debug", "d", false, "Print debug messages")
 	rootCmd.PersistentFlags().BoolVarP(&flagStats, "stats", "S", false, "Print stats")
+	rootCmd.PersistentFlags().BoolVarP(&flagMatchFilenames, "match-filenames", "f", false, "Search only in file names")
 
 	searchCmd.PersistentFlags().StringVarP(&searchBackends, "backends", "b", "", "Comma-separated list of names of the backends to use. The names are defined in your configuration file. If specified, it overrides `default_backends` in the configuration file. \"all\" will use every backend")
 
@@ -151,16 +153,26 @@ var searchCmd = &cobra.Command{
 				results:  len(results),
 			})
 			for _, res := range results {
-				start, end := res.Highlight[0], res.Highlight[1]
-				fmt.Printf(
-					"%s:%s:%s (%s)\n%s: %s\n\n",
-					res.Backend,
-					textBold.Sprint(toAnsiURL(res.RepoURL, res.Owner+"/"+res.RepoName)),
-					textBold.Sprint(toAnsiURL(res.FileURL, res.Path)),
-					textBold.Sprint(res.Branch),
-					textBoldGreen.Sprint(res.Lineno),
-					res.Line[:start]+textBoldRed.Sprint(res.Line[start:end])+res.Line[end:],
-				)
+				if flagMatchFilenames {
+					fmt.Printf(
+						"%s:%s:%s (%s)\n\n",
+						res.Backend,
+						textBold.Sprint(toAnsiURL(res.RepoURL, res.Owner+"/"+res.RepoName)),
+						textBold.Sprint(toAnsiURL(res.FileURL, res.Path)),
+						textBold.Sprint(res.Branch),
+					)
+				} else {
+					start, end := res.Highlight[0], res.Highlight[1]
+					fmt.Printf(
+						"%s:%s:%s (%s)\n%s: %s\n\n",
+						res.Backend,
+						textBold.Sprint(toAnsiURL(res.RepoURL, res.Owner+"/"+res.RepoName)),
+						textBold.Sprint(toAnsiURL(res.FileURL, res.Path)),
+						textBold.Sprint(res.Branch),
+						textBoldGreen.Sprint(res.Lineno),
+						res.Line[:start]+textBoldRed.Sprint(res.Line[start:end])+res.Line[end:],
+					)
+				}
 			}
 		}
 		totalTime := time.Since(searchStart)

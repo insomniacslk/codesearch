@@ -196,33 +196,32 @@ func (g *Gitlab) toResult(client *gitlab.Client, searchString string, blobs []*g
 			before, after []string
 			line          string
 		)
-		if startOffset == -1 {
-			// The search string is part of the file name rather than the file
-			// content.
-			// TODO file name search is not implemented yet, so this is just
-			//      ignored for now
-			continue
+		result := Result{
+			Backend:  g.Name(),
+			Path:     blob.Path,
+			RepoURL:  project.WebURL,
+			FileURL:  fmt.Sprintf("%s/-/blob/%s/%s#L%d", project.WebURL, project.DefaultBranch, blob.Path, blob.Startline),
+			Owner:    project.Namespace.Path,
+			RepoName: project.Path,
+			Branch:   project.DefaultBranch,
 		}
-		lines := strings.Split(blob.Data, "\n")
-		linenoInBlob := strings.Count(blob.Data[:startOffset], "\n")
-		line = lines[linenoInBlob]
-		start = strings.Index(strings.ToLower(line), strings.ToLower(searchString))
-		end = start + len(searchString)
-		before = lines[:linenoInBlob]
-		after = lines[linenoInBlob:]
-		results = append(results, Result{
-			Backend:   g.Name(),
-			Line:      line,
-			Lineno:    blob.Startline,
-			Context:   ResultContext{Before: before, After: after},
-			Highlight: [2]int{start, end},
-			Path:      blob.Path,
-			RepoURL:   project.WebURL,
-			FileURL:   fmt.Sprintf("%s/-/blob/%s/%s#L%d", project.WebURL, project.DefaultBranch, blob.Path, blob.Startline),
-			Owner:     project.Namespace.Path,
-			RepoName:  project.Path,
-			Branch:    project.DefaultBranch,
-		})
+		if startOffset == -1 {
+			// The search pattern was found in the file name, not in the file
+			// content, so it's marked as such
+			result.IsFilename = true
+		} else {
+			lines := strings.Split(blob.Data, "\n")
+			linenoInBlob := strings.Count(blob.Data[:startOffset], "\n")
+			line = lines[linenoInBlob]
+			start = strings.Index(strings.ToLower(line), strings.ToLower(searchString))
+			end = start + len(searchString)
+			before = lines[:linenoInBlob]
+			after = lines[linenoInBlob:]
+			result.Lineno = blob.Startline
+			result.Context = ResultContext{Before: before, After: after}
+			result.Highlight = [2]int{start, end}
+		}
+		results = append(results, result)
 	}
 	return results, nil
 }
