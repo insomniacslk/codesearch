@@ -40,7 +40,7 @@ func init() {
 	rootCmd.PersistentFlags().StringVarP(&configFile, "config", "c", "", "Configuration file")
 	rootCmd.PersistentFlags().BoolVarP(&flagDebug, "debug", "d", false, "Print debug messages")
 	rootCmd.PersistentFlags().BoolVarP(&flagStats, "stats", "S", false, "Print stats")
-	rootCmd.PersistentFlags().BoolVarP(&flagMatchFilenames, "match-filenames", "f", false, "Search only in file names")
+	rootCmd.PersistentFlags().BoolVarP(&flagMatchFilenames, "match-filenames", "F", false, "Search only in file names")
 
 	searchCmd.PersistentFlags().StringVarP(&searchBackends, "backends", "b", "", "Comma-separated list of names of the backends to use. The names are defined in your configuration file. If specified, it overrides `default_backends` in the configuration file. \"all\" will use every backend")
 
