@@ -197,17 +197,19 @@ func (g *Gitlab) toResult(client *gitlab.Client, searchString string, blobs []*g
 			line          string
 		)
 		result := Result{
-			Backend:  g.Name(),
-			Path:     blob.Path,
-			RepoURL:  project.WebURL,
-			FileURL:  fmt.Sprintf("%s/-/blob/%s/%s#L%d", project.WebURL, project.DefaultBranch, blob.Path, blob.Startline),
-			Owner:    project.Namespace.Path,
-			RepoName: project.Path,
-			Branch:   project.DefaultBranch,
+			Backend:    g.Name(),
+			IsFilename: false,
+			Path:       blob.Path,
+			RepoURL:    project.WebURL,
+			FileURL:    fmt.Sprintf("%s/-/blob/%s/%s#L%d", project.WebURL, project.DefaultBranch, blob.Path, blob.Startline),
+			Owner:      project.Namespace.Path,
+			RepoName:   project.Path,
+			Branch:     project.DefaultBranch,
 		}
 		if startOffset == -1 {
 			// The search pattern was found in the file name, not in the file
-			// content, so it's marked as such
+			// content, so it's marked as such. Line, StartLine, Lineno, Context
+			// and Highlight are not set
 			result.IsFilename = true
 		} else {
 			lines := strings.Split(blob.Data, "\n")
@@ -220,6 +222,8 @@ func (g *Gitlab) toResult(client *gitlab.Client, searchString string, blobs []*g
 			result.Lineno = blob.Startline
 			result.Context = ResultContext{Before: before, After: after}
 			result.Highlight = [2]int{start, end}
+			result.Line = line
+			result.Lineno = blob.Startline
 		}
 		results = append(results, result)
 	}

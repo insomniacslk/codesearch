@@ -22,6 +22,7 @@ var (
 	flagDebug             bool
 	flagStats             bool
 	flagSearchInFilenames bool
+	flagMatchFilename     string
 
 	searchBackends string
 
@@ -41,6 +42,7 @@ func init() {
 	rootCmd.PersistentFlags().BoolVarP(&flagDebug, "debug", "d", false, "Print debug messages")
 	rootCmd.PersistentFlags().BoolVarP(&flagStats, "stats", "S", false, "Print stats")
 	rootCmd.PersistentFlags().BoolVarP(&flagSearchInFilenames, "search-in-filenames", "F", false, "Search only in file names")
+	rootCmd.PersistentFlags().StringVarP(&flagMatchFilename, "match-filename", "f", "", "Show results only from files whose names match the provided pattern")
 
 	searchCmd.PersistentFlags().StringVarP(&searchBackends, "backends", "b", "", "Comma-separated list of names of the backends to use. The names are defined in your configuration file. If specified, it overrides `default_backends` in the configuration file. \"all\" will use every backend")
 
@@ -146,34 +148,64 @@ var searchCmd = &cobra.Command{
 			if err != nil {
 				logrus.Fatalf("Failed to search with backend %q: %v", b.Name(), err)
 			}
-			totalResults += len(results)
-			stats = append(stats, stat{
+			st := stat{
 				name:     b.Name(),
 				duration: time.Since(start),
-				results:  len(results),
-			})
+			}
+			numResults := 0
 			for _, res := range results {
 				if flagSearchInFilenames {
-					fmt.Printf(
-						"%s:%s:%s (%s)\n\n",
-						res.Backend,
-						textBold.Sprint(toAnsiURL(res.RepoURL, res.Owner+"/"+res.RepoName)),
-						textBold.Sprint(toAnsiURL(res.FileURL, res.Path)),
-						textBold.Sprint(res.Branch),
-					)
+					// we are searching the pattern in the file name
+					if res.IsFilename {
+						fmt.Printf(
+							"%s:%s:%s (%s)\n\n",
+							res.Backend,
+							textBold.Sprint(toAnsiURL(res.RepoURL, res.Owner+"/"+res.RepoName)),
+							textBold.Sprint(toAnsiURL(res.FileURL, res.Path)),
+							textBold.Sprint(res.Branch),
+						)
+						numResults++
+					}
 				} else {
-					start, end := res.Highlight[0], res.Highlight[1]
-					fmt.Printf(
-						"%s:%s:%s (%s)\n%s: %s\n\n",
-						res.Backend,
-						textBold.Sprint(toAnsiURL(res.RepoURL, res.Owner+"/"+res.RepoName)),
-						textBold.Sprint(toAnsiURL(res.FileURL, res.Path)),
-						textBold.Sprint(res.Branch),
-						textBoldGreen.Sprint(res.Lineno),
-						res.Line[:start]+textBoldRed.Sprint(res.Line[start:end])+res.Line[end:],
-					)
+					// we are searching the pattern in the file content
+					if flagMatchFilename != "" {
+						if strings.Contains(strings.ToLower(res.Path), strings.ToLower(flagMatchFilename)) {
+							// only show the result if the file name matches the
+							// file pattern
+							if !res.IsFilename {
+								fmt.Printf(
+									"%s:%s:%s (%s)\n\n",
+									res.Backend,
+									textBold.Sprint(toAnsiURL(res.RepoURL, res.Owner+"/"+res.RepoName)),
+									textBold.Sprint(toAnsiURL(res.FileURL, res.Path)),
+									textBold.Sprint(res.Branch),
+								)
+								numResults++
+							}
+						}
+					} else {
+						// no file name pattern specified, so show all the
+						// results
+						if res.IsFilename {
+							continue
+						}
+						start, end := res.Highlight[0], res.Highlight[1]
+						fmt.Printf(
+							"%s:%s:%s (%s)\n%s: %s\n\n",
+							res.Backend,
+							textBold.Sprint(toAnsiURL(res.RepoURL, res.Owner+"/"+res.RepoName)),
+							textBold.Sprint(toAnsiURL(res.FileURL, res.Path)),
+							textBold.Sprint(res.Branch),
+							textBoldGreen.Sprint(res.Lineno),
+							res.Line[:start]+textBoldRed.Sprint(res.Line[start:end])+res.Line[end:],
+						)
+						numResults++
+					}
 				}
 			}
+			st.results = numResults
+			stats = append(stats, st)
+			totalResults += numResults
 		}
 		totalTime := time.Since(searchStart)
 		if flagStats {
