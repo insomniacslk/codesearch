@@ -156,7 +156,7 @@ var searchCmd = &cobra.Command{
 			for _, res := range results {
 				if flagSearchInFilenames {
 					// we are searching the pattern in the file name
-					if res.IsFilename {
+					if res.IsFilename && strings.Contains(strings.ToLower(res.Path), strings.ToLower(searchString)) {
 						fmt.Printf(
 							"%s:%s:%s (%s)\n\n",
 							res.Backend,
