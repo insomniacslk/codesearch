@@ -21,9 +21,9 @@ repository configuration and tokens.
 * [x] handle rate limiting on github API
 * [ ] handle rate limiting on gitlab API
 * [ ] implement response caching via last-modified headers
-* [*] fetch full file on larger context for github
+* [x] fetch full file on larger context for github
 * [ ] fetch full file on larger context for gitlab
 * [ ] common syntax for all backends
-* [*] file name search for gitlab
+* [x] file name search for gitlab
 * [ ] file name search for github
 * [ ] implement server-side search
