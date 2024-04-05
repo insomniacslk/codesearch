@@ -47,8 +47,8 @@ func init() {
 	searchCmd.PersistentFlags().StringVarP(&searchBackends, "backends", "b", "", "Comma-separated list of names of the backends to use. The names are defined in your configuration file. If specified, it overrides `default_backends` in the configuration file. \"all\" will use every backend")
 	searchCmd.PersistentFlags().BoolVarP(&flagSearchInFilenames, "search-in-filenames", "F", false, "Search only in file names")
 	searchCmd.PersistentFlags().StringVarP(&flagMatchFilename, "match-filename", "f", "", "Show results only from files whose names match the provided pattern")
-	searchCmd.PersistentFlags().IntVarP(&flagSearchContextBefore, "--before", "B", 0, "Number of context lines to show before the result")
-	searchCmd.PersistentFlags().IntVarP(&flagSearchContextAfter, "--after", "A", 0, "Number of context lines to show after the result")
+	searchCmd.PersistentFlags().IntVarP(&flagSearchContextBefore, "before", "B", 0, "Number of context lines to show before the result")
+	searchCmd.PersistentFlags().IntVarP(&flagSearchContextAfter, "after", "A", 0, "Number of context lines to show after the result")
 
 	rootCmd.AddCommand(searchCmd)
 }
