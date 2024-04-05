@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"os"
 	"strings"
 	"time"
 
@@ -118,7 +119,7 @@ var searchCmd = &cobra.Command{
 			}
 		}
 		searchString := strings.Join(args, " ")
-		fmt.Printf("Searching %q on %q\n", searchString, backendNames)
+		fmt.Fprintf(os.Stderr, "Searching %q on %q\n", searchString, backendNames)
 		backends := make([]codesearch.Backend, 0, len(backendNames))
 		for _, name := range backendNames {
 			backendConfig, ok := config.Backends[name]
@@ -137,6 +138,9 @@ var searchCmd = &cobra.Command{
 				logrus.Fatalf("Failed to instantiate backend %q: %v", name, err)
 			}
 			backends = append(backends, backend)
+		}
+		if len(backends) == 0 {
+			logrus.Fatal("No backends specified")
 		}
 		type stat struct {
 			name     string
@@ -232,10 +236,10 @@ var searchCmd = &cobra.Command{
 		totalTime := time.Since(searchStart)
 		if flagStats {
 			for _, st := range stats {
-				fmt.Printf("Got %d results on %q in %s\n", st.results, st.name, st.duration)
+				fmt.Fprintf(os.Stderr, "Got %d results on %q in %s\n", st.results, st.name, st.duration)
 			}
 		}
-		fmt.Printf("Got %d total results in %s\n", totalResults, totalTime)
+		fmt.Fprintf(os.Stderr, "Got %d total results in %s\n", totalResults, totalTime)
 	},
 }
 
