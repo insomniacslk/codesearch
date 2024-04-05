@@ -16,6 +16,8 @@ type Gitlab struct {
 	token       string
 	group       string
 	project     string
+	linesBefore int
+	linesAfter  int
 }
 
 func (g *Gitlab) New(name string, params BackendParams) (Backend, error) {
@@ -60,6 +62,14 @@ func (g *Gitlab) Projet() string {
 
 func (g *Gitlab) Type() string {
 	return BackendTypeGitlab
+}
+
+func (g *Gitlab) SetLinesBefore(n int) {
+	g.linesBefore = n
+}
+
+func (g *Gitlab) SetLinesAfter(n int) {
+	g.linesAfter = n
 }
 
 func (g *Gitlab) Search(searchString string, opts ...Opt) (Results, error) {
@@ -217,8 +227,8 @@ func (g *Gitlab) toResult(client *gitlab.Client, searchString string, blobs []*g
 			line = lines[linenoInBlob]
 			start = strings.Index(strings.ToLower(line), strings.ToLower(searchString))
 			end = start + len(searchString)
-			before = lines[:linenoInBlob]
-			after = lines[linenoInBlob:]
+			before = lines[linenoInBlob-g.linesBefore : linenoInBlob]
+			after = lines[linenoInBlob : linenoInBlob+g.linesAfter]
 			result.Lineno = blob.Startline
 			result.Context = ResultContext{Before: before, After: after}
 			result.Highlight = [2]int{start, end}

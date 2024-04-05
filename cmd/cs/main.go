@@ -18,11 +18,13 @@ const progname = "cs"
 var (
 	globalConfig codesearch.Config
 
-	configFile            string
-	flagDebug             bool
-	flagStats             bool
-	flagSearchInFilenames bool
-	flagMatchFilename     string
+	configFile              string
+	flagDebug               bool
+	flagStats               bool
+	flagSearchInFilenames   bool
+	flagMatchFilename       string
+	flagSearchContextBefore int
+	flagSearchContextAfter  int
 
 	searchBackends string
 
@@ -41,10 +43,12 @@ func init() {
 	rootCmd.PersistentFlags().StringVarP(&configFile, "config", "c", "", "Configuration file")
 	rootCmd.PersistentFlags().BoolVarP(&flagDebug, "debug", "d", false, "Print debug messages")
 	rootCmd.PersistentFlags().BoolVarP(&flagStats, "stats", "S", false, "Print stats")
-	rootCmd.PersistentFlags().BoolVarP(&flagSearchInFilenames, "search-in-filenames", "F", false, "Search only in file names")
-	rootCmd.PersistentFlags().StringVarP(&flagMatchFilename, "match-filename", "f", "", "Show results only from files whose names match the provided pattern")
 
 	searchCmd.PersistentFlags().StringVarP(&searchBackends, "backends", "b", "", "Comma-separated list of names of the backends to use. The names are defined in your configuration file. If specified, it overrides `default_backends` in the configuration file. \"all\" will use every backend")
+	searchCmd.PersistentFlags().BoolVarP(&flagSearchInFilenames, "search-in-filenames", "F", false, "Search only in file names")
+	searchCmd.PersistentFlags().StringVarP(&flagMatchFilename, "match-filename", "f", "", "Show results only from files whose names match the provided pattern")
+	searchCmd.PersistentFlags().IntVarP(&flagSearchContextBefore, "--before", "B", 0, "Number of context lines to show before the result")
+	searchCmd.PersistentFlags().IntVarP(&flagSearchContextAfter, "--after", "A", 0, "Number of context lines to show after the result")
 
 	rootCmd.AddCommand(searchCmd)
 }
@@ -144,7 +148,11 @@ var searchCmd = &cobra.Command{
 		totalResults := 0
 		for _, b := range backends {
 			start := time.Now()
-			results, err := b.Search(searchString)
+			results, err := b.Search(
+				searchString,
+				codesearch.WithLinesBefore(flagSearchContextBefore),
+				codesearch.WithLinesAfter(flagSearchContextAfter),
+			)
 			if err != nil {
 				logrus.Fatalf("Failed to search with backend %q: %v", b.Name(), err)
 			}
@@ -158,7 +166,7 @@ var searchCmd = &cobra.Command{
 					// we are searching the pattern in the file name
 					if strings.Contains(strings.ToLower(res.Path), strings.ToLower(searchString)) {
 						fmt.Printf(
-							"%s:%s:%s (%s)\n\n",
+							"%s%s:%s:%s (%s)\n\n",
 							res.Backend,
 							textBold.Sprint(toAnsiURL(res.RepoURL, res.Owner+"/"+res.RepoName)),
 							textBold.Sprint(toAnsiURL(res.FileURL, res.Path)),
@@ -189,15 +197,29 @@ var searchCmd = &cobra.Command{
 						if res.IsFilename {
 							continue
 						}
+						// get context lines
+						var before, after string
+						for idx, line := range res.Context.Before {
+							before += fmt.Sprintf("%d: %s\n", res.Lineno-(len(res.Context.Before)-idx), line)
+						}
+						for idx, line := range res.Context.After {
+							after += fmt.Sprintf("%d: %s\n", res.Lineno+idx+1, line)
+						}
+						if len(res.Context.After) > 0 {
+							after = "\n" + after
+						}
+						// get start and end of highlight
 						start, end := res.Highlight[0], res.Highlight[1]
 						fmt.Printf(
-							"%s:%s:%s (%s)\n%s: %s\n\n",
+							"%s:%s:%s (%s)\n\n%s%s: %s%s\n\n",
 							res.Backend,
 							textBold.Sprint(toAnsiURL(res.RepoURL, res.Owner+"/"+res.RepoName)),
 							textBold.Sprint(toAnsiURL(res.FileURL, res.Path)),
 							textBold.Sprint(res.Branch),
+							before,
 							textBoldGreen.Sprint(res.Lineno),
 							res.Line[:start]+textBoldRed.Sprint(res.Line[start:end])+res.Line[end:],
+							after,
 						)
 						numResults++
 					}

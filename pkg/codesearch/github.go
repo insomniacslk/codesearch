@@ -18,6 +18,8 @@ type Github struct {
 	apiEndpoint string
 	token       string
 	org         string
+	linesBefore int
+	linesAfter  int
 }
 
 func (g *Github) New(name string, params BackendParams) (Backend, error) {
@@ -51,6 +53,14 @@ func (g *Github) Org() string {
 
 func (g *Github) Type() string {
 	return BackendTypeGithub
+}
+
+func (g *Github) SetLinesBefore(n int) {
+	g.linesBefore = n
+}
+
+func (g *Github) SetLinesAfter(n int) {
+	g.linesAfter = n
 }
 
 func (g *Github) Search(terms string, opts ...Opt) (Results, error) {
@@ -163,31 +173,39 @@ func (g *Github) toResult(ctx context.Context, client *github.Client, csresults 
 			for _, match := range tm.Matches {
 				// start of the highlight, relative to the full file content
 				start := fragmentStart + match.Indices[0]
-				length := fragmentStart + match.Indices[1] - start
-				lineno := strings.Count((fullText)[:start], "\n")
+				length := match.Indices[1] - match.Indices[0]
+				lineno := strings.Count((fullText)[:start], "\n") + 1
 				// start of the highlight, relative to the line rather than to
 				// the full text
 				startInLine := start
 				for idx, line := range lines {
-					if idx == lineno {
+					if idx+1 == lineno {
 						break
 					}
 					startInLine -= len(line) + 1
 				}
-				line := lines[lineno]
+				line := lines[lineno-1]
 				// try adding line number
 				fileURLwithLineno, err := url.Parse(*res.HTMLURL)
 				if err != nil {
 					return nil, fmt.Errorf("invalid file URL %q: %q", *res.HTMLURL, err)
 				}
 				fileURLwithLineno.Fragment = fmt.Sprintf("L%d", lineno+1)
+				beforeIdx := lineno - 1 - g.linesBefore
+				if beforeIdx < 0 {
+					beforeIdx = 0
+				}
+				afterIdx := lineno + g.linesAfter
+				if afterIdx > len(lines) {
+					afterIdx = len(lines)
+				}
 				result := Result{
 					Backend: g.Name(),
 					Line:    line,
-					Lineno:  lineno + 1,
+					Lineno:  lineno,
 					Context: ResultContext{
-						Before: nil,
-						After:  nil,
+						Before: lines[beforeIdx : lineno-1],
+						After:  lines[lineno:afterIdx],
 					},
 					Highlight: [2]int{startInLine, startInLine + length},
 					Path:      *res.Path,
