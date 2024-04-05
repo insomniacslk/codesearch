@@ -26,3 +26,4 @@ repository configuration and tokens.
 * [ ] common syntax for all backends
 * [*] file name search for gitlab
 * [ ] file name search for github
+* [ ] implement server-side search
