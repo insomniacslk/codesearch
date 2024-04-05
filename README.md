@@ -20,6 +20,7 @@ repository configuration and tokens.
 * [x] basic search on github
 * [x] basic search on gitlab
 * [ ] basic search on local code with google/codesearch
+* [ ] limit number of search result
 * [x] handle rate limiting on github API
 * [ ] handle rate limiting on gitlab API
 * [ ] implement response caching via last-modified headers
