@@ -226,6 +226,8 @@ func (g *Gitlab) toResult(client *gitlab.Client, searchString string, blobs []*g
 			line = lines[linenoInBlob]
 			start = strings.Index(strings.ToLower(line), strings.ToLower(searchString))
 			end = start + len(searchString)
+			// TODO fetch entire file content if the requested context is longer
+			// than the available one
 			beforeIdx := linenoInBlob - g.linesBefore
 			if beforeIdx < 0 {
 				beforeIdx = 0
