@@ -1,0 +1,19 @@
+default_backends: [github_yourname]
+#default_backends: [all]
+backends:
+  github_yourname:
+    type: github
+    params:
+      api_endpoint: https://api.github.com
+      token: your-token
+      org: your-org-or-github-username
+  gitlab_yourname:
+    # Gitlab code search only works on premium and ultimate plans, see
+    # https://docs.gitlab.com/ee/api/search.html#scope-blobs
+    type: gitlab
+    params:
+      api_endpoint: https://my-gitlab.example.com
+      token: your-token
+      # set either group or project, but not both
+      group:
+      project: your-project
