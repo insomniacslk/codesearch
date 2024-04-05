@@ -166,7 +166,7 @@ var searchCmd = &cobra.Command{
 					// we are searching the pattern in the file name
 					if strings.Contains(strings.ToLower(res.Path), strings.ToLower(searchString)) {
 						fmt.Printf(
-							"%s%s:%s:%s (%s)\n\n",
+							"%s:%s:%s (%s)\n\n",
 							res.Backend,
 							textBold.Sprint(toAnsiURL(res.RepoURL, res.Owner+"/"+res.RepoName)),
 							textBold.Sprint(toAnsiURL(res.FileURL, res.Path)),

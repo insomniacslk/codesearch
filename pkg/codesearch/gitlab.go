@@ -202,9 +202,8 @@ func (g *Gitlab) toResult(client *gitlab.Client, searchString string, blobs []*g
 		project := projects[blob.ProjectID]
 		startOffset := strings.Index(strings.ToLower(blob.Data), strings.ToLower(searchString))
 		var (
-			start, end    int
-			before, after []string
-			line          string
+			start, end int
+			line       string
 		)
 		result := Result{
 			Backend:    g.Name(),
@@ -227,10 +226,20 @@ func (g *Gitlab) toResult(client *gitlab.Client, searchString string, blobs []*g
 			line = lines[linenoInBlob]
 			start = strings.Index(strings.ToLower(line), strings.ToLower(searchString))
 			end = start + len(searchString)
-			before = lines[linenoInBlob-g.linesBefore : linenoInBlob]
-			after = lines[linenoInBlob : linenoInBlob+g.linesAfter]
+			beforeIdx := linenoInBlob - g.linesBefore
+			if beforeIdx < 0 {
+				beforeIdx = 0
+			}
+			afterIdx := linenoInBlob + g.linesAfter + 1
+			if afterIdx > len(lines) {
+				afterIdx = len(lines)
+			}
+			logrus.Infof("Indexes: %d:%d:%d", beforeIdx, linenoInBlob, afterIdx)
 			result.Lineno = blob.Startline
-			result.Context = ResultContext{Before: before, After: after}
+			result.Context = ResultContext{
+				Before: lines[beforeIdx:linenoInBlob],
+				After:  lines[linenoInBlob+1 : afterIdx],
+			}
 			result.Highlight = [2]int{start, end}
 			result.Line = line
 			result.Lineno = blob.Startline
