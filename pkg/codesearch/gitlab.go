@@ -210,7 +210,7 @@ func (g *Gitlab) toResult(client *gitlab.Client, searchString string, blobs []*g
 			IsFilename: false,
 			Path:       blob.Path,
 			RepoURL:    project.WebURL,
-			FileURL:    fmt.Sprintf("%s/-/blob/%s/%s#L%d", project.WebURL, project.DefaultBranch, blob.Path, blob.Startline),
+			FileURL:    fmt.Sprintf("%s/-/blob/%s/%s", project.WebURL, project.DefaultBranch, blob.Path),
 			Owner:      project.Namespace.Path,
 			RepoName:   project.Path,
 			Branch:     project.DefaultBranch,
@@ -234,7 +234,6 @@ func (g *Gitlab) toResult(client *gitlab.Client, searchString string, blobs []*g
 			if afterIdx > len(lines) {
 				afterIdx = len(lines)
 			}
-			logrus.Infof("Indexes: %d:%d:%d", beforeIdx, linenoInBlob, afterIdx)
 			result.Lineno = blob.Startline
 			result.Context = ResultContext{
 				Before: lines[beforeIdx:linenoInBlob],
@@ -242,7 +241,9 @@ func (g *Gitlab) toResult(client *gitlab.Client, searchString string, blobs []*g
 			}
 			result.Highlight = [2]int{start, end}
 			result.Line = line
-			result.Lineno = blob.Startline
+			result.Lineno = blob.Startline + linenoInBlob
+			// add line fragment to URL
+			result.FileURL = fmt.Sprintf("%s/-/blob/%s/%s#L%d", project.WebURL, project.DefaultBranch, blob.Path, blob.Startline+linenoInBlob)
 		}
 		results = append(results, result)
 	}
