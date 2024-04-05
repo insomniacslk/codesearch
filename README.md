@@ -1,6 +1,8 @@
 # codesearch
 
-Command line code search tool that uses different backends, like GitHub, GitLab,
+Command line code search tool that uses different backends, like
+[GitHub](https://docs.github.com/en/rest/search/search),
+[GitLab](https://docs.gitlab.com/ee/api/search.html),
 and soon local search via
 [`google/codesearch`](https://github.com/google/codesearch).
 
@@ -10,7 +12,7 @@ Create a file called `config.yml` in your configdir:
 * on Linux, `~/.config/cs/config.yml`
 * on macOS, `~/Library/Application Support/cs/config.yml`
 
-And use the content of the provided `config.yml.example` with your own
+And use the content of the provided [`config.yml.example`](/config.yml.example) with your own
 repository configuration and tokens.
 
 ## Features
