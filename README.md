@@ -20,6 +20,7 @@ repository configuration and tokens.
 Feature matrix:
 
 |                      | GitHub   | GitLab | Local |
+|----------------------|----------|--------|-------|
 | Basic search         | ✅       | ✅     | ❌    |
 | Limit to N results   | ❌       | ❌     | ❌    |
 | Rate limiting        | ✅       | ❌     | ❌    |
