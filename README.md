@@ -17,16 +17,19 @@ repository configuration and tokens.
 
 ## Features
 
-* [x] basic search on github
-* [x] basic search on gitlab
-* [ ] basic search on local code with google/codesearch
-* [ ] limit number of search result
-* [x] handle rate limiting on github API
-* [ ] handle rate limiting on gitlab API
-* [ ] implement response caching via last-modified headers
-* [x] fetch full file on larger context for github
-* [ ] fetch full file on larger context for gitlab
-* [ ] common syntax for all backends
-* [x] file name search for gitlab
-* [ ] file name search for github
-* [ ] implement server-side search
+Feature matrix:
+
+|                      | GitHub   | GitLab | Local |
+| Basic search         | ✅       | ✅     | ❌    |
+| Limit to N results   | ❌       | ❌     | ❌    |
+| Rate limiting        | ✅       | ❌     | ❌    |
+| Response caching     | ❌       | ❌     | ❌    |
+| Full file fetching   | ✅       | ❌     | ❌    |
+| Search by file name  | ✅       | ✅     | ❌    |
+| Search in file names | ❌       | ✅     | ❌    |
+
+Other general features:
+* [x] Colorized output
+* [x] Search context (lines before/after)
+* [ ] Common syntax for all backends
+* [ ] Server-side search
