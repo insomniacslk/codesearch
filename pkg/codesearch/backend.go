@@ -32,9 +32,9 @@ func BackendByType(t BackendType) Backend {
 		/*
 			case BackendTypeBitbucket:
 				return &Bitbucket{}
-			case BackendTypeLocal:
-				return &Local{}
 		*/
+	case BackendTypeCindex:
+		return &Cindex{}
 	default:
 		return nil
 	}

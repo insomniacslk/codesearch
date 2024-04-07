@@ -25,6 +25,7 @@ Feature matrix:
 | Limit to N results   | ❌       | ❌     | ❌    |
 | Rate limiting        | ✅       | ❌     | ❌    |
 | Response caching     | ❌       | ❌     | ❌    |
+| Case insensitive     | ❌       | ❌     | ❌    |
 | Full file fetching   | ✅       | ❌     | ❌    |
 | Search by file name  | ✅       | ✅     | ❌    |
 | Search in file names | ❌       | ✅     | ❌    |
