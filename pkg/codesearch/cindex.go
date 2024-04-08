@@ -3,6 +3,7 @@ package codesearch
 import (
 	"bytes"
 	"fmt"
+	"os"
 	"strconv"
 	"strings"
 
@@ -76,7 +77,7 @@ func (g *Cindex) toResult(searchString string, ix *index.Index, grep regexp.Grep
 		name := ix.Name(fileid)
 		grep.File(name)
 		o := grep.Stdout.(*bytes.Buffer).String()
-		// FIXME: fork and patch google/codesearch to write results to a struct
+		// FIXME: fork and patch google/codesearch to write results to a struct.
 		// Reason: the index package of google/codesearch prints directly to
 		// stdout/stderr rather than saving the values in a struct, so I have to
 		// parse the output splitting by `:`. However if a file name contains a
@@ -94,10 +95,11 @@ func (g *Cindex) toResult(searchString string, ix *index.Index, grep regexp.Grep
 			return nil, fmt.Errorf("malformed result line: has less than 3 components. Line: %q", o)
 		}
 		filename := parts[0]
-		lineno, err := strconv.ParseInt(parts[1], 10, 64)
+		lineno64, err := strconv.ParseInt(parts[1], 10, 64)
 		if err != nil {
 			return nil, fmt.Errorf("invalid line number: %w", err)
 		}
+		lineno := int(lineno64)
 		line := parts[2]
 		newlineIdx := strings.Index(line, "\n")
 		if newlineIdx != -1 {
@@ -114,6 +116,24 @@ func (g *Cindex) toResult(searchString string, ix *index.Index, grep regexp.Grep
 		if indexedPath == "" {
 			return nil, fmt.Errorf("no indexed path found for %q", filename)
 		}
+		var before, after []string
+		if g.linesBefore > 0 || g.linesAfter > 0 {
+			fullText, err := os.ReadFile(filename)
+			if err != nil {
+				return nil, fmt.Errorf("failed to read file %q: %w", filename, err)
+			}
+			lines := strings.Split(string(fullText), "\n")
+			indexBefore := lineno - g.linesBefore
+			if indexBefore < 0 {
+				indexBefore = 0
+			}
+			indexAfter := lineno + g.linesAfter
+			if indexAfter > len(lines) {
+				indexAfter = len(lines)
+			}
+			before = lines[indexBefore:lineno]
+			after = lines[lineno+1 : indexAfter+1]
+		}
 		result := Result{
 			Backend:  g.Name(),
 			Path:     filename,
@@ -122,8 +142,8 @@ func (g *Cindex) toResult(searchString string, ix *index.Index, grep regexp.Grep
 			Owner:    "",
 			RepoName: indexedPath,
 			Branch:   "",
-			Context:  ResultContext{}, //Before: ..., After: ...},
-			Lineno:   int(lineno),
+			Context:  ResultContext{Before: before, After: after},
+			Lineno:   lineno,
 			Line:     line,
 			// TODO: Highlight
 			//Highlight: [2]int{...},
