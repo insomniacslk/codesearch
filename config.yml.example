@@ -45,4 +45,6 @@ backends:
     # type must be "cindex"
     type: cindex
     params:
+      # Index file created with `cindex`, see
+      # https://github.com/google/codesearch/tree/master/cmd/cindex
       index_file: /home/your-user/.csearchindex
