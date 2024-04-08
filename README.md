@@ -21,12 +21,13 @@ Feature matrix:
 
 |                      | GitHub   | GitLab | Local |
 |----------------------|----------|--------|-------|
-| Basic search         | ✅       | ✅     | ❌    |
+| Basic search         | ✅       | ✅     | ✅    |
 | Limit to N results   | ❌       | ❌     | ❌    |
-| Rate limiting        | ✅       | ❌     | ❌    |
-| Response caching     | ❌       | ❌     | ❌    |
+| Rate limiting        | ✅       | ❌     | N/A   |
+| Response caching     | ❌       | ❌     | N/A   |
 | Case insensitive     | ❌       | ❌     | ❌    |
-| Full file fetching   | ✅       | ❌     | ❌    |
+| Show context lines   | ✅       | max 3  | ❌    |
+| Full file fetching   | ✅       | ❌     | ✅    |
 | Search by file name  | ✅       | ✅     | ❌    |
 | Search in file names | ❌       | ✅     | ❌    |
 

@@ -4,6 +4,7 @@ go 1.22.1
 
 require (
 	github.com/fatih/color v1.14.1
+	github.com/google/codesearch v1.2.0
 	github.com/google/go-github/v60 v60.0.0
 	github.com/kirsle/configdir v0.0.0-20170128060238-e45d2f54772f
 	github.com/sirupsen/logrus v1.9.3
