@@ -3,7 +3,7 @@
 Command line code search tool that uses different backends, like
 [GitHub](https://docs.github.com/en/rest/search/search),
 [GitLab](https://docs.gitlab.com/ee/api/search.html),
-and soon local search via
+and local search via
 [`google/codesearch`](https://github.com/google/codesearch).
 
 ## Configuration
