@@ -64,7 +64,6 @@ func initConfig() {
 		configDir := configdir.LocalConfig(progname)
 		viper.SetConfigName("config")
 		viper.SetConfigType("yaml")
-		viper.AddConfigPath(".")
 		viper.AddConfigPath(configDir)
 
 		viper.AutomaticEnv()
