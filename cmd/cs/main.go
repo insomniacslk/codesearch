@@ -1,6 +1,7 @@
 package main
 
 import (
+	_ "embed"
 	"fmt"
 	"os"
 	"sort"
@@ -16,6 +17,9 @@ import (
 )
 
 const progname = "cs"
+
+//go:embed config.yml.example
+var configFileExample string
 
 var (
 	globalConfig codesearch.Config
@@ -54,6 +58,7 @@ func init() {
 
 	rootCmd.AddCommand(searchCmd)
 	rootCmd.AddCommand(listCmd)
+	rootCmd.AddCommand(configExampleCmd)
 }
 
 func initConfig() {
@@ -103,6 +108,14 @@ var listCmd = &cobra.Command{
 		for idx, name := range backendNames {
 			fmt.Printf("%d) %s (type=%q)\n", idx+1, name, config.Backends[name].Type)
 		}
+	},
+}
+
+var configExampleCmd = &cobra.Command{
+	Use:   "config-example",
+	Short: "Print an example config file",
+	Run: func(cmd *cobra.Command, args []string) {
+		fmt.Println(configFileExample)
 	},
 }
 

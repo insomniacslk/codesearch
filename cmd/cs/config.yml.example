@@ -1,5 +1,7 @@
+# default_backends is the list of backends used if you don't specify them
+# explicitly on the command line. `all` is a special reserved name that will use
+# all the available backends.
 default_backends: [github_yourname]
-#default_backends: [all]
 
 # List of all the configured backends
 backends:

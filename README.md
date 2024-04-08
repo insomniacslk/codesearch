@@ -12,8 +12,8 @@ Create a file called `config.yml` in your configdir:
 * on Linux, `~/.config/cs/config.yml`
 * on macOS, `~/Library/Application Support/cs/config.yml`
 
-And use the content of the provided [`config.yml.example`](/config.yml.example) with your own
-repository configuration and tokens.
+Use the output of `cs config-example` to populate a sample config. Alternatively
+see the file[`config.yml.example`](/cmd/cs/config.yml.example).
 
 ## Features
 
