@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"os"
+	"sort"
 	"strings"
 	"time"
 
@@ -52,6 +53,7 @@ func init() {
 	searchCmd.PersistentFlags().IntVarP(&flagSearchContextAfter, "after", "A", 0, "Number of context lines to show after the result")
 
 	rootCmd.AddCommand(searchCmd)
+	rootCmd.AddCommand(listCmd)
 }
 
 func initConfig() {
@@ -87,6 +89,22 @@ func initConfig() {
 	if flagDebug {
 		logrus.SetLevel(logrus.DebugLevel)
 	}
+}
+
+var listCmd = &cobra.Command{
+	Use:   "list",
+	Short: "List the available backends",
+	Run: func(cmd *cobra.Command, args []string) {
+		config := getConfig()
+		backendNames := make([]string, 0, len(config.Backends))
+		for name := range config.Backends {
+			backendNames = append(backendNames, name)
+		}
+		sort.Strings(backendNames)
+		for idx, name := range backendNames {
+			fmt.Printf("%d) %s (type=%q)\n", idx+1, name, config.Backends[name].Type)
+		}
+	},
 }
 
 var searchCmd = &cobra.Command{
