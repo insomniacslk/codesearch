@@ -36,3 +36,16 @@ Other general features:
 * [x] Search context (lines before/after)
 * [ ] Common syntax for all backends
 * [ ] Server-side search
+
+
+NOTE: there is no common syntax for searching, so for advanced queries you must know
+each search engine's syntax and capabilities
+
+## Backends
+
+Currently GitHub, GitLab and local search via
+[google/codesearch](https://github.com/google/codesearch) are supported.
+BitBucket support might be implemented in the future.
+
+Note that for local search to work you must create (and keep up to date) a local
+index using [`cindex`](https://github.com/google/codesearch/tree/master/cmd/cindex).
