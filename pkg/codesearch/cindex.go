@@ -115,16 +115,16 @@ func (g *Cindex) toResult(searchString string, ix *index.Index, grep regexp.Grep
 			return nil, fmt.Errorf("no indexed path found for %q", filename)
 		}
 		result := Result{
-			Backend: g.Name(),
-			Path:    filename,
-			RepoURL: "file://" + indexedPath,
-			FileURL: fmt.Sprintf("file://%s:%d", filename, lineno),
-			//Owner:      project.Namespace.Path,
+			Backend:  g.Name(),
+			Path:     filename,
+			RepoURL:  "file://" + indexedPath,
+			FileURL:  "file://" + filename,
+			Owner:    "",
 			RepoName: indexedPath,
-			//Branch:   project.DefaultBranch,
-			Context: ResultContext{}, //Before: ..., After: ...},
-			Lineno:  int(lineno),
-			Line:    line,
+			Branch:   "",
+			Context:  ResultContext{}, //Before: ..., After: ...},
+			Lineno:   int(lineno),
+			Line:     line,
 			// TODO: Highlight
 			//Highlight: [2]int{...},
 			// TODO: IsFilename
