@@ -1,19 +1,48 @@
 default_backends: [github_yourname]
 #default_backends: [all]
+
+# List of all the configured backends
 backends:
+
+  # Configuration for the `github` backend. `github` uses the GitHub search
+  # API, which is available on both public and Enterprise GitHub.
   github_yourname:
+    # type must be "github"
     type: github
     params:
+      # Endpoint for the API calls. If you use GitHub enterprise, replace this
+      # with your Enterprise URL.
       api_endpoint: https://api.github.com
+      # Token used to authenticate to the search API. See personal access tokens at
+      # https://docs.github.com/en/authentication/keeping-your-account-and-data-secure/managing-your-personal-access-tokens
+      # or create directly one at https://github.com/settings/tokens/new
+      # with scope repo:all and admin:org:read .
       token: your-token
+      # search only code for this organization
       org: your-org-or-github-username
+
+  # Configuration for the `gitlab` backend. `gitlab` uses the GitLab
+  # Advanced Search API, which is only available on the Premium and Ultimate
+  # plans, so it won't work with plain GitLab. See
+  # https://docs.gitlab.com/ee/api/search.html#scope-blobs
   gitlab_yourname:
-    # Gitlab code search only works on premium and ultimate plans, see
-    # https://docs.gitlab.com/ee/api/search.html#scope-blobs
+    # type must be "gitlab"
     type: gitlab
     params:
+       # Endpoint for the API calls. Replace it with your GitLab instance
+       # endpoint.
       api_endpoint: https://my-gitlab.example.com
+      # Token used to authenticate to the search API. See Personal Access Tokens
+      # at https://docs.gitlab.com/ee/user/profile/personal_access_tokens.html
       token: your-token
       # set either group or project, but not both
       group:
       project: your-project
+
+  # Configuration for the `cindex` backend. `cindex` is based on the
+  # google/codesearch library to search on a pre-built index of local files.
+  cindex_something:
+    # type must be "cindex"
+    type: cindex
+    params:
+      index_file: /home/your-user/.csearchindex
