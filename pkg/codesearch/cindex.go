@@ -9,6 +9,7 @@ import (
 
 	"github.com/google/codesearch/index"
 	"github.com/google/codesearch/regexp"
+	"github.com/sirupsen/logrus"
 )
 
 // Cindex implements the Backend interface
@@ -75,8 +76,11 @@ func (g *Cindex) toResult(searchString string, ix *index.Index, grep regexp.Grep
 	)
 	for _, fileid := range post {
 		name := ix.Name(fileid)
+		logrus.Debugf("fileid=%d name=%q", fileid, name)
 		grep.File(name)
-		o := grep.Stdout.(*bytes.Buffer).String()
+		b := grep.Stdout.(*bytes.Buffer)
+		o := b.String()
+		b.Reset()
 		// FIXME: fork and patch google/codesearch to write results to a struct.
 		// Reason: the index package of google/codesearch prints directly to
 		// stdout/stderr rather than saving the values in a struct, so I have to
@@ -88,19 +92,23 @@ func (g *Cindex) toResult(searchString string, ix *index.Index, grep regexp.Grep
 				return nil, fmt.Errorf("match reader failed: %s", e)
 			}
 			// no output, no error, just continue
+			logrus.Debugf("Skipping empty line")
 			continue
 		}
-		parts := strings.SplitN(o, ":", 3)
-		if len(parts) < 3 {
-			return nil, fmt.Errorf("malformed result line: has less than 3 components. Line: %q", o)
+		if !strings.HasPrefix(o, name) {
+			return nil, fmt.Errorf("line does not start with file name %q. Line: %q", name, o)
 		}
-		filename := parts[0]
-		lineno64, err := strconv.ParseInt(parts[1], 10, 64)
+		res := o[len(name)+1:]
+		parts := strings.SplitN(res, ":", 2)
+		if len(parts) < 2 {
+			return nil, fmt.Errorf("malformed result line: has fewer than 2 components. Line: %q", res)
+		}
+		lineno64, err := strconv.ParseInt(parts[0], 10, 64)
 		if err != nil {
 			return nil, fmt.Errorf("invalid line number: %w", err)
 		}
 		lineno := int(lineno64)
-		line := parts[2]
+		line := parts[1]
 		newlineIdx := strings.Index(line, "\n")
 		if newlineIdx != -1 {
 			line = line[:newlineIdx]
@@ -108,19 +116,19 @@ func (g *Cindex) toResult(searchString string, ix *index.Index, grep regexp.Grep
 		// find indexed path
 		var indexedPath string
 		for _, p := range ix.Paths() {
-			if strings.HasPrefix(filename, p) {
+			if strings.HasPrefix(name, p) {
 				indexedPath = p
 				break
 			}
 		}
 		if indexedPath == "" {
-			return nil, fmt.Errorf("no indexed path found for %q", filename)
+			return nil, fmt.Errorf("no indexed path found for %q", name)
 		}
 		var before, after []string
 		if g.linesBefore > 0 || g.linesAfter > 0 {
-			fullText, err := os.ReadFile(filename)
+			fullText, err := os.ReadFile(name)
 			if err != nil {
-				return nil, fmt.Errorf("failed to read file %q: %w", filename, err)
+				return nil, fmt.Errorf("failed to read file %q: %w", name, err)
 			}
 			lines := strings.Split(string(fullText), "\n")
 			indexBefore := lineno - g.linesBefore
@@ -136,9 +144,9 @@ func (g *Cindex) toResult(searchString string, ix *index.Index, grep regexp.Grep
 		}
 		result := Result{
 			Backend:  g.Name(),
-			Path:     filename,
+			Path:     name,
 			RepoURL:  "file://" + indexedPath,
-			FileURL:  "file://" + filename,
+			FileURL:  "file://" + name,
 			Owner:    "",
 			RepoName: indexedPath,
 			Branch:   "",
