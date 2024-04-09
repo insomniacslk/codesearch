@@ -22,6 +22,7 @@ Feature matrix:
 |                          | GitHub   | GitLab | Local |
 |--------------------------|----------|--------|-------|
 | Basic search             | ✅       | ✅     | ✅    |
+| Colorized output         | ✅       | ✅     | ✅    |
 | Highlight search pattern | ✅       | ✅     | ❌    |
 | Limit to N results       | ❌       | ❌     | ❌    |
 | Rate limiting            | ✅       | ❌     | N/A   |
@@ -33,8 +34,6 @@ Feature matrix:
 | Search in file names     | ❌       | ✅     | ❌    |
 
 Other general features:
-* [x] Colorized output
-* [x] Search context (lines before/after)
 * [ ] Common syntax for all backends
 * [ ] Server-side search
 
