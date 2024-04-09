@@ -81,11 +81,6 @@ func (g *Cindex) toResult(searchString string, ix *index.Index, grep regexp.Grep
 		b := grep.Stdout.(*bytes.Buffer)
 		o := b.String()
 		b.Reset()
-		// FIXME: fork and patch google/codesearch to write results to a struct.
-		// Reason: the index package of google/codesearch prints directly to
-		// stdout/stderr rather than saving the values in a struct, so I have to
-		// parse the output splitting by `:`. However if a file name contains a
-		// `:`, the split is wrong.
 		if o == "" {
 			e := grep.Stderr.(*bytes.Buffer).String()
 			if e != "" {
