@@ -63,6 +63,7 @@ func (g *Cindex) Search(searchString string, opts ...Opt) (Results, error) {
 		Stderr: &stderr,
 		Regexp: re,
 		N:      true, // need lineno
+		H:      true, // do not print file names
 	}
 	ix := index.Open(g.indexFile)
 	q := index.RegexpQuery(re.Syntax)
@@ -90,13 +91,9 @@ func (g *Cindex) toResult(searchString string, ix *index.Index, grep regexp.Grep
 			logrus.Debugf("Skipping empty line")
 			continue
 		}
-		if !strings.HasPrefix(o, name) {
-			return nil, fmt.Errorf("line does not start with file name %q. Line: %q", name, o)
-		}
-		res := o[len(name)+1:]
-		parts := strings.SplitN(res, ":", 2)
+		parts := strings.SplitN(o, ":", 2)
 		if len(parts) < 2 {
-			return nil, fmt.Errorf("malformed result line: has fewer than 2 components. Line: %q", res)
+			return nil, fmt.Errorf("malformed result line: has fewer than 2 components. Line: %q", o)
 		}
 		lineno64, err := strconv.ParseInt(parts[0], 10, 64)
 		if err != nil {
