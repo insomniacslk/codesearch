@@ -210,17 +210,34 @@ var searchCmd = &cobra.Command{
 					}
 				} else {
 					// we are searching the pattern in the file content
+					// get context lines
+					var before, after string
+					for idx, line := range res.Context.Before {
+						before += fmt.Sprintf("%d: %s\n", res.Lineno-(len(res.Context.Before)-idx), line)
+					}
+					for idx, line := range res.Context.After {
+						after += fmt.Sprintf("%d: %s\n", res.Lineno+idx+1, line)
+					}
+					if len(res.Context.After) > 0 {
+						after = "\n" + after
+					}
+					// get start and end of highlight
+					start, end := res.Highlight[0], res.Highlight[1]
 					if flagMatchFilename != "" {
 						if strings.Contains(strings.ToLower(res.Path), strings.ToLower(flagMatchFilename)) {
 							// only show the result if the file name matches the
 							// file pattern
 							if !res.IsFilename {
 								fmt.Printf(
-									"%s:%s:%s (%s)\n\n",
+									"%s:%s:%s (%s)\n\n%s%s: %s%s\n\n",
 									res.Backend,
 									textBold.Sprint(toAnsiURL(res.RepoURL, res.Owner+"/"+res.RepoName)),
 									textBold.Sprint(toAnsiURL(res.FileURL, res.Path)),
 									textBold.Sprint(res.Branch),
+									before,
+									textBoldGreen.Sprint(res.Lineno),
+									res.Line[:start]+textBoldRed.Sprint(res.Line[start:end])+res.Line[end:],
+									after,
 								)
 								numResults++
 							}
@@ -231,19 +248,6 @@ var searchCmd = &cobra.Command{
 						if res.IsFilename {
 							continue
 						}
-						// get context lines
-						var before, after string
-						for idx, line := range res.Context.Before {
-							before += fmt.Sprintf("%d: %s\n", res.Lineno-(len(res.Context.Before)-idx), line)
-						}
-						for idx, line := range res.Context.After {
-							after += fmt.Sprintf("%d: %s\n", res.Lineno+idx+1, line)
-						}
-						if len(res.Context.After) > 0 {
-							after = "\n" + after
-						}
-						// get start and end of highlight
-						start, end := res.Highlight[0], res.Highlight[1]
 						fmt.Printf(
 							"%s:%s:%s (%s)\n\n%s%s: %s%s\n\n",
 							res.Backend,
