@@ -11,13 +11,14 @@ import (
 
 // Gitlab implements the Backend interface
 type Gitlab struct {
-	name        string
-	apiEndpoint string
-	token       string
-	group       string
-	project     string
-	linesBefore int
-	linesAfter  int
+	name            string
+	apiEndpoint     string
+	token           string
+	group           string
+	project         string
+	linesBefore     int
+	linesAfter      int
+	caseInsensitive bool
 }
 
 func (g *Gitlab) New(name string, params BackendParams) (Backend, error) {
@@ -62,6 +63,10 @@ func (g *Gitlab) Projet() string {
 
 func (g *Gitlab) Type() string {
 	return BackendTypeGitlab
+}
+
+func (g *Gitlab) SetCaseInsensitive(v bool) {
+	g.caseInsensitive = v
 }
 
 func (g *Gitlab) SetLinesBefore(n int) {

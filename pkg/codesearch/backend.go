@@ -6,10 +6,17 @@ type Backend interface {
 	Type() string
 	SetLinesBefore(n int)
 	SetLinesAfter(n int)
+	SetCaseInsensitive(v bool)
 	Search(terms string, opts ...Opt) (Results, error)
 }
 
 type Opt func(b Backend)
+
+func WithCaseInsensitive(v bool) Opt {
+	return func(b Backend) {
+		b.SetCaseInsensitive(v)
+	}
+}
 
 func WithLinesBefore(n int) Opt {
 	return func(b Backend) {

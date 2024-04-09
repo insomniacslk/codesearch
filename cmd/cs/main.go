@@ -31,6 +31,7 @@ var (
 	flagMatchFilename       string
 	flagSearchContextBefore int
 	flagSearchContextAfter  int
+	flagCaseInsensitive     bool
 
 	searchBackends string
 
@@ -55,6 +56,7 @@ func init() {
 	searchCmd.PersistentFlags().StringVarP(&flagMatchFilename, "match-filename", "f", "", "Show results only from files whose names match the provided pattern")
 	searchCmd.PersistentFlags().IntVarP(&flagSearchContextBefore, "before", "B", 0, "Number of context lines to show before the result")
 	searchCmd.PersistentFlags().IntVarP(&flagSearchContextAfter, "after", "A", 0, "Number of context lines to show after the result")
+	searchCmd.PersistentFlags().BoolVarP(&flagCaseInsensitive, "case-insensitive", "i", false, "Case-insensitive search")
 
 	rootCmd.AddCommand(searchCmd)
 	rootCmd.AddCommand(listCmd)
@@ -186,6 +188,7 @@ var searchCmd = &cobra.Command{
 				searchString,
 				codesearch.WithLinesBefore(flagSearchContextBefore),
 				codesearch.WithLinesAfter(flagSearchContextAfter),
+				codesearch.WithCaseInsensitive(flagCaseInsensitive),
 			)
 			if err != nil {
 				logrus.Fatalf("Failed to search with backend %q: %v", b.Name(), err)

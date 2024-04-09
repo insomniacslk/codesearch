@@ -14,12 +14,13 @@ import (
 
 // Github implements the Backend interface
 type Github struct {
-	name        string
-	apiEndpoint string
-	token       string
-	org         string
-	linesBefore int
-	linesAfter  int
+	name            string
+	apiEndpoint     string
+	token           string
+	org             string
+	linesBefore     int
+	linesAfter      int
+	caseInsensitive bool
 }
 
 func (g *Github) New(name string, params BackendParams) (Backend, error) {
@@ -53,6 +54,10 @@ func (g *Github) Org() string {
 
 func (g *Github) Type() string {
 	return BackendTypeGithub
+}
+
+func (g *Github) SetCaseInsensitive(v bool) {
+	g.caseInsensitive = v
 }
 
 func (g *Github) SetLinesBefore(n int) {

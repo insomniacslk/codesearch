@@ -15,10 +15,11 @@ import (
 
 // Csearch implements the Backend interface
 type Csearch struct {
-	name        string
-	indexFile   string
-	linesBefore int
-	linesAfter  int
+	name            string
+	indexFile       string
+	linesBefore     int
+	linesAfter      int
+	caseInsensitive bool
 }
 
 func (g *Csearch) New(name string, params BackendParams) (Backend, error) {
@@ -41,6 +42,10 @@ func (g *Csearch) Type() string {
 	return BackendTypeCsearch
 }
 
+func (g *Csearch) SetCaseInsensitive(v bool) {
+	g.caseInsensitive = v
+}
+
 func (g *Csearch) SetLinesBefore(n int) {
 	g.linesBefore = n
 }
@@ -54,6 +59,9 @@ func (g *Csearch) Search(searchString string, opts ...Opt) (Results, error) {
 		opt(g)
 	}
 	pattern := "(?m)" + searchString
+	if g.caseInsensitive {
+		pattern = "(?i)" + pattern
+	}
 	re, err := regexp.Compile(pattern)
 	if err != nil {
 		return nil, fmt.Errorf("failed to compile regexp pattern: %w", err)
