@@ -24,7 +24,7 @@ Feature matrix:
 | Basic search             | ✅       | ✅     | ✅    |
 | Regexp search            | ❌       | ❌     | ✅    |
 | Colorized output         | ✅       | ✅     | ✅    |
-| Highlight search pattern | ✅       | ✅     | ❌    |
+| Highlight search pattern | ✅       | ✅     | ✅    |
 | Limit to N results       | ❌       | ❌     | ❌    |
 | Rate limiting            | ✅       | ❌     | N/A   |
 | Response caching         | ❌       | ❌     | N/A   |

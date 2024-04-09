@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"fmt"
 	"os"
+	goregexp "regexp"
 	"strconv"
 	"strings"
 
@@ -68,13 +69,17 @@ func (g *Cindex) Search(searchString string, opts ...Opt) (Results, error) {
 	ix := index.Open(g.indexFile)
 	q := index.RegexpQuery(re.Syntax)
 	post := ix.PostingQuery(q)
-	return g.toResult(searchString, ix, grep, post)
+	return g.toResult(pattern, ix, grep, post)
 }
 
-func (g *Cindex) toResult(searchString string, ix *index.Index, grep regexp.Grep, post []uint32) (Results, error) {
+func (g *Cindex) toResult(pattern string, ix *index.Index, grep regexp.Grep, post []uint32) (Results, error) {
 	var (
 		results Results
 	)
+	re, err := goregexp.Compile(pattern)
+	if err != nil {
+		return nil, fmt.Errorf("failed to compile pattern for indexing: %w", err)
+	}
 	for _, fileid := range post {
 		name := ix.Name(fileid)
 		logrus.Debugf("fileid=%d name=%q", fileid, name)
@@ -134,19 +139,26 @@ func (g *Cindex) toResult(searchString string, ix *index.Index, grep regexp.Grep
 			before = lines[indexBefore:lineno]
 			after = lines[lineno+1 : indexAfter+1]
 		}
+		// find start and end offsets for highlight
+		offsets := re.FindAllStringIndex(line, -1)
+		// TODO use the offsets after the first one, once multiple highlight
+		// support is added to the Backend interface
+		var start, end int
+		if len(offsets) > 0 {
+			start, end = offsets[0][0], offsets[0][1]
+		}
 		result := Result{
-			Backend:  g.Name(),
-			Path:     name,
-			RepoURL:  "file://" + indexedPath,
-			FileURL:  "file://" + name,
-			Owner:    "",
-			RepoName: indexedPath,
-			Branch:   "",
-			Context:  ResultContext{Before: before, After: after},
-			Lineno:   lineno,
-			Line:     line,
-			// TODO: Highlight
-			//Highlight: [2]int{...},
+			Backend:   g.Name(),
+			Path:      name,
+			RepoURL:   "file://" + indexedPath,
+			FileURL:   "file://" + name,
+			Owner:     "",
+			RepoName:  indexedPath,
+			Branch:    "",
+			Context:   ResultContext{Before: before, After: after},
+			Lineno:    lineno,
+			Line:      line,
+			Highlight: [2]int{start, end},
 			// TODO: IsFilename
 			//IsFilename: true/false
 		}
