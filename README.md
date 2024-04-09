@@ -19,17 +19,18 @@ see the file[`config.yml.example`](/cmd/cs/config.yml.example).
 
 Feature matrix:
 
-|                      | GitHub   | GitLab | Local |
-|----------------------|----------|--------|-------|
-| Basic search         | ✅       | ✅     | ✅    |
-| Limit to N results   | ❌       | ❌     | ❌    |
-| Rate limiting        | ✅       | ❌     | N/A   |
-| Response caching     | ❌       | ❌     | N/A   |
-| Case insensitive     | ❌       | ❌     | ❌    |
-| Show context lines   | ✅       | max 3  | ✅    |
-| Full file fetching   | ✅       | ❌     | ✅    |
-| Search by file name  | ✅       | ✅     | ✅    |
-| Search in file names | ❌       | ✅     | ❌    |
+|                          | GitHub   | GitLab | Local |
+|--------------------------|----------|--------|-------|
+| Basic search             | ✅       | ✅     | ✅    |
+| Highlight search pattern | ✅       | ✅     | ❌    |
+| Limit to N results       | ❌       | ❌     | ❌    |
+| Rate limiting            | ✅       | ❌     | N/A   |
+| Response caching         | ❌       | ❌     | N/A   |
+| Case insensitive         | ❌       | ❌     | ❌    |
+| Show context lines       | ✅       | max 3  | ✅    |
+| Full file fetching       | ✅       | ❌     | ✅    |
+| Search by file name      | ✅       | ✅     | ✅    |
+| Search in file names     | ❌       | ✅     | ❌    |
 
 Other general features:
 * [x] Colorized output
