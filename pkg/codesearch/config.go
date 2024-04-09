@@ -38,7 +38,7 @@ const (
 	BackendTypeGithub    = "github"
 	BackendTypeGitlab    = "gitlab"
 	BackendTypeBitbucket = "bitbucket"
-	BackendTypeCindex    = "cindex"
+	BackendTypeCsearch   = "csearch"
 	BackendTypeUnknown   = "unknown"
 )
 
@@ -50,8 +50,8 @@ func BackendTypeByName(name string) BackendType {
 		return BackendTypeGitlab
 	case string(BackendTypeBitbucket):
 		return BackendTypeBitbucket
-	case string(BackendTypeCindex):
-		return BackendTypeCindex
+	case string(BackendTypeCsearch):
+		return BackendTypeCsearch
 	default:
 		return BackendTypeUnknown
 	}

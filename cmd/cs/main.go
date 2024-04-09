@@ -284,7 +284,7 @@ func toAnsiURL(url, text string) string {
 var rootCmd = &cobra.Command{
 	Use:   progname,
 	Short: fmt.Sprintf("%q is a code searching tool inspired by Facebook's BigGrep.", progname),
-	Long:  fmt.Sprintf("%s is a code searching tool inspired by Facebook's BigGrep. It can search across different code repository types (e.g. GitHub), and on the local filesystem using google/codesearch's cindex.", progname),
+	Long:  fmt.Sprintf("%s is a code searching tool inspired by Facebook's BigGrep. It can search across different code repository types (e.g. GitHub), and on the local filesystem using google/codesearch's `cindex` tool.", progname),
 	Args:  cobra.MinimumNArgs(1),
 	Run:   nil,
 }

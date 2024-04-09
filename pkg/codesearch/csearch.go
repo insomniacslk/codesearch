@@ -13,43 +13,43 @@ import (
 	"github.com/sirupsen/logrus"
 )
 
-// Cindex implements the Backend interface
-type Cindex struct {
+// Csearch implements the Backend interface
+type Csearch struct {
 	name        string
 	indexFile   string
 	linesBefore int
 	linesAfter  int
 }
 
-func (g *Cindex) New(name string, params BackendParams) (Backend, error) {
+func (g *Csearch) New(name string, params BackendParams) (Backend, error) {
 	indexFile := params.GetString("index_file")
 	if indexFile == nil {
 		return nil, fmt.Errorf("missing 'index_file' parameter")
 	}
-	gl := Cindex{
+	gl := Csearch{
 		name:      name,
 		indexFile: *indexFile,
 	}
 	return &gl, nil
 }
 
-func (g *Cindex) Name() string {
+func (g *Csearch) Name() string {
 	return g.name
 }
 
-func (g *Cindex) Type() string {
-	return BackendTypeCindex
+func (g *Csearch) Type() string {
+	return BackendTypeCsearch
 }
 
-func (g *Cindex) SetLinesBefore(n int) {
+func (g *Csearch) SetLinesBefore(n int) {
 	g.linesBefore = n
 }
 
-func (g *Cindex) SetLinesAfter(n int) {
+func (g *Csearch) SetLinesAfter(n int) {
 	g.linesAfter = n
 }
 
-func (g *Cindex) Search(searchString string, opts ...Opt) (Results, error) {
+func (g *Csearch) Search(searchString string, opts ...Opt) (Results, error) {
 	for _, opt := range opts {
 		opt(g)
 	}
@@ -72,7 +72,7 @@ func (g *Cindex) Search(searchString string, opts ...Opt) (Results, error) {
 	return g.toResult(pattern, ix, grep, post)
 }
 
-func (g *Cindex) toResult(pattern string, ix *index.Index, grep regexp.Grep, post []uint32) (Results, error) {
+func (g *Csearch) toResult(pattern string, ix *index.Index, grep regexp.Grep, post []uint32) (Results, error) {
 	var (
 		results Results
 	)

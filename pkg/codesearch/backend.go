@@ -33,8 +33,8 @@ func BackendByType(t BackendType) Backend {
 			case BackendTypeBitbucket:
 				return &Bitbucket{}
 		*/
-	case BackendTypeCindex:
-		return &Cindex{}
+	case BackendTypeCsearch:
+		return &Csearch{}
 	default:
 		return nil
 	}

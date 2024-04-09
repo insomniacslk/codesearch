@@ -41,11 +41,11 @@ backends:
       group:
       project: your-project
 
-  # Configuration for the `cindex` backend. `cindex` is based on the
+  # Configuration for the `csearch` backend. `csearch` is based on the
   # google/codesearch library to search on a pre-built index of local files.
-  cindex_something:
-    # type must be "cindex"
-    type: cindex
+  csearch_something:
+    # type must be "csearch"
+    type: csearch
     params:
       # Index file created with `cindex`, see
       # https://github.com/google/codesearch/tree/master/cmd/cindex
