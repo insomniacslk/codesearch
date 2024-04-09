@@ -22,6 +22,7 @@ Feature matrix:
 |                          | GitHub   | GitLab | Local |
 |--------------------------|----------|--------|-------|
 | Basic search             | ✅       | ✅     | ✅    |
+| Regexp search            | ❌       | ❌     | ✅    |
 | Colorized output         | ✅       | ✅     | ✅    |
 | Highlight search pattern | ✅       | ✅     | ❌    |
 | Limit to N results       | ❌       | ❌     | ❌    |
