@@ -32,7 +32,7 @@ Feature matrix:
 | Show context lines       | ✅       | max 3  | ✅      |
 | Full file fetching       | ✅       | ❌     | ✅      |
 | Search by file name      | ✅       | ✅     | ✅      |
-| Search in file names     | ❌       | ✅     | ❌      |
+| Search in file names     | ❌       | ✅     | ✅      |
 
 Other general features:
 * [ ] Common syntax for all backends
