@@ -28,7 +28,7 @@ Feature matrix:
 | Case insensitive     | ❌       | ❌     | ❌    |
 | Show context lines   | ✅       | max 3  | ✅    |
 | Full file fetching   | ✅       | ❌     | ✅    |
-| Search by file name  | ✅       | ✅     | ❌    |
+| Search by file name  | ✅       | ✅     | ✅    |
 | Search in file names | ❌       | ✅     | ❌    |
 
 Other general features:
