@@ -265,6 +265,14 @@ var searchCmd = &cobra.Command{
 					}
 					// get start and end of highlight
 					start, end := res.Highlight[0], res.Highlight[1]
+					var repoName string
+					if res.Owner != "" {
+						repoName = res.Owner
+						if res.RepoName != "" {
+							repoName += "/"
+						}
+					}
+					repoName += res.RepoName
 					if flagMatchFilename != "" {
 						if strings.Contains(strings.ToLower(res.Path), strings.ToLower(flagMatchFilename)) {
 							// only show the result if the file name matches the
@@ -273,7 +281,7 @@ var searchCmd = &cobra.Command{
 								fmt.Printf(
 									"%s:%s:%s (%s)\n\n%s%s: %s%s\n\n",
 									res.Backend,
-									textBold.Sprint(toAnsiURL(res.RepoURL, res.Owner+"/"+res.RepoName)),
+									textBold.Sprint(toAnsiURL(res.RepoURL, repoName)),
 									textBold.Sprint(toAnsiURL(res.FileURL, res.Path)),
 									textBold.Sprint(res.Branch),
 									before,
@@ -293,7 +301,7 @@ var searchCmd = &cobra.Command{
 						fmt.Printf(
 							"%s:%s:%s (%s)\n\n%s%s: %s%s\n\n",
 							res.Backend,
-							textBold.Sprint(toAnsiURL(res.RepoURL, res.Owner+"/"+res.RepoName)),
+							textBold.Sprint(toAnsiURL(res.RepoURL, repoName)),
 							textBold.Sprint(toAnsiURL(res.FileURL, res.Path)),
 							textBold.Sprint(res.Branch),
 							before,
