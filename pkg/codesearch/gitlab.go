@@ -11,14 +11,15 @@ import (
 
 // Gitlab implements the Backend interface
 type Gitlab struct {
-	name            string
-	apiEndpoint     string
-	token           string
-	group           string
-	project         string
-	linesBefore     int
-	linesAfter      int
-	caseInsensitive bool
+	name              string
+	apiEndpoint       string
+	token             string
+	group             string
+	project           string
+	linesBefore       int
+	linesAfter        int
+	caseInsensitive   bool
+	searchInFilenames bool
 }
 
 func (g *Gitlab) New(name string, params BackendParams) (Backend, error) {
@@ -75,6 +76,10 @@ func (g *Gitlab) SetLinesBefore(n int) {
 
 func (g *Gitlab) SetLinesAfter(n int) {
 	g.linesAfter = n
+}
+
+func (g *Gitlab) SetSearchInFilenames(v bool) {
+	g.searchInFilenames = v
 }
 
 func (g *Gitlab) Search(searchString string, opts ...Opt) (Results, error) {

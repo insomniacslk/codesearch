@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"fmt"
 	"os"
+	"path/filepath"
 	goregexp "regexp"
 	"strconv"
 	"strings"
@@ -15,11 +16,12 @@ import (
 
 // Csearch implements the Backend interface
 type Csearch struct {
-	name            string
-	indexFile       string
-	linesBefore     int
-	linesAfter      int
-	caseInsensitive bool
+	name              string
+	indexFile         string
+	linesBefore       int
+	linesAfter        int
+	caseInsensitive   bool
+	searchInFilenames bool
 }
 
 func (g *Csearch) New(name string, params BackendParams) (Backend, error) {
@@ -54,6 +56,10 @@ func (g *Csearch) SetLinesAfter(n int) {
 	g.linesAfter = n
 }
 
+func (g *Csearch) SetSearchInFilenames(v bool) {
+	g.searchInFilenames = v
+}
+
 func (g *Csearch) Search(searchString string, opts ...Opt) (Results, error) {
 	for _, opt := range opts {
 		opt(g)
@@ -61,6 +67,47 @@ func (g *Csearch) Search(searchString string, opts ...Opt) (Results, error) {
 	pattern := "(?m)" + searchString
 	if g.caseInsensitive {
 		pattern = "(?i)" + pattern
+	}
+	ix := index.Open(g.indexFile)
+	if g.searchInFilenames {
+		// get all the file names instead of doing a search on the cindex
+		logrus.Debugf("Searching in file names")
+		re, err := goregexp.Compile(pattern)
+		if err != nil {
+			return nil, fmt.Errorf("failed to compile pattern for indexing: %w", err)
+		}
+		var results Results
+		files := make(map[string]string)
+		for _, path := range ix.Paths() {
+			err = filepath.Walk(path, func(path string, info os.FileInfo, err error) error {
+				if err == nil && re.MatchString(info.Name()) {
+					files[info.Name()] = path
+				}
+				return nil
+			})
+			if err != nil {
+				return nil, fmt.Errorf("failed to walk the source tree: %w", err)
+			}
+			for name, path := range files {
+				shortName := name
+				if strings.HasPrefix(name, path) {
+					shortName = name[len(path):]
+					shortName = strings.TrimLeft(shortName, "/")
+				}
+				result := Result{
+					Backend:  g.Name(),
+					Path:     shortName,
+					RepoURL:  "file://" + path,
+					FileURL:  "file://" + name,
+					Owner:    "",
+					RepoName: path,
+					// TODO: IsFilename
+					//IsFilename: true/false
+				}
+				results = append(results, result)
+			}
+		}
+		return results, nil
 	}
 	re, err := regexp.Compile(pattern)
 	if err != nil {
@@ -74,16 +121,13 @@ func (g *Csearch) Search(searchString string, opts ...Opt) (Results, error) {
 		N:      true, // need lineno
 		H:      true, // do not print file names
 	}
-	ix := index.Open(g.indexFile)
 	q := index.RegexpQuery(re.Syntax)
 	post := ix.PostingQuery(q)
 	return g.toResult(pattern, ix, grep, post)
 }
 
 func (g *Csearch) toResult(pattern string, ix *index.Index, grep regexp.Grep, post []uint32) (Results, error) {
-	var (
-		results Results
-	)
+	var results Results
 	re, err := goregexp.Compile(pattern)
 	if err != nil {
 		return nil, fmt.Errorf("failed to compile pattern for indexing: %w", err)

@@ -14,13 +14,14 @@ import (
 
 // Github implements the Backend interface
 type Github struct {
-	name            string
-	apiEndpoint     string
-	token           string
-	org             string
-	linesBefore     int
-	linesAfter      int
-	caseInsensitive bool
+	name              string
+	apiEndpoint       string
+	token             string
+	org               string
+	linesBefore       int
+	linesAfter        int
+	caseInsensitive   bool
+	searchInFilenames bool
 }
 
 func (g *Github) New(name string, params BackendParams) (Backend, error) {
@@ -66,6 +67,10 @@ func (g *Github) SetLinesBefore(n int) {
 
 func (g *Github) SetLinesAfter(n int) {
 	g.linesAfter = n
+}
+
+func (g *Github) SetSearchInFilenames(v bool) {
+	g.searchInFilenames = v
 }
 
 func (g *Github) Search(terms string, opts ...Opt) (Results, error) {
