@@ -155,9 +155,14 @@ func (g *Csearch) toResult(pattern string, ix *index.Index, grep regexp.Grep, po
 		if len(offsets) > 0 {
 			start, end = offsets[0][0], offsets[0][1]
 		}
+		shortName := name
+		if strings.HasPrefix(name, indexedPath) {
+			shortName = name[len(indexedPath):]
+			shortName = strings.TrimLeft(shortName, "/")
+		}
 		result := Result{
 			Backend:   g.Name(),
-			Path:      name,
+			Path:      shortName,
 			RepoURL:   "file://" + indexedPath,
 			FileURL:   "file://" + name,
 			Owner:     "",
