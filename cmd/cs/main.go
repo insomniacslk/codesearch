@@ -149,6 +149,18 @@ func getSorter(method string) sorter {
 	}
 }
 
+func repoNameFromRes(res *codesearch.Result) string {
+	var repoName string
+	if res.Owner != "" {
+		repoName = res.Owner
+		if res.RepoName != "" {
+			repoName += "/"
+		}
+	}
+	repoName += res.RepoName
+	return repoName
+}
+
 var searchCmd = &cobra.Command{
 	Use:   "search",
 	Short: "Search code in the specified backends",
@@ -179,8 +191,8 @@ var searchCmd = &cobra.Command{
 			}
 		}
 		// get sorter to sort results later
-		sort := getSorter(flagSort)
-		if sort == nil {
+		sorter := getSorter(flagSort)
+		if sorter == nil {
 			log.Fatalf("Invalid value for --sort")
 		}
 
@@ -232,31 +244,20 @@ var searchCmd = &cobra.Command{
 				duration: time.Since(start),
 			}
 			// sort the results, if requested
-			results = sort(results)
+			results = sorter(results)
 			numResults := 0
+			fileNamesMap := make(map[string]*codesearch.Result)
 			for idx, res := range results {
-				var repoName string
-				if res.Owner != "" {
-					repoName = res.Owner
-					if res.RepoName != "" {
-						repoName += "/"
-					}
-				}
-				repoName += res.RepoName
+				repoName := repoNameFromRes(&res)
 				if flagLimit > 0 && uint(idx) >= flagLimit {
 					break
 				}
 				if flagSearchInFilenames {
-					// we are searching the pattern in the file name
+					// we are searching the pattern in the file name. Collect
+					// all of the first in a map to remove duplicates, then
+					// print them out later in this function
 					if strings.Contains(strings.ToLower(res.Path), strings.ToLower(searchString)) {
-						fmt.Printf(
-							"%s:%s:%s (%s)\n\n",
-							res.Backend,
-							textBold.Sprint(toAnsiURL(res.RepoURL, repoName)),
-							textBold.Sprint(toAnsiURL(res.FileURL, res.Path)),
-							textBold.Sprint(res.Branch),
-						)
-						numResults++
+						fileNamesMap[res.Path] = &res
 					}
 				} else {
 					// we are searching the pattern in the file content
@@ -312,6 +313,27 @@ var searchCmd = &cobra.Command{
 						numResults++
 					}
 				}
+			}
+			if flagSearchInFilenames {
+				// and now print the unique file names, if flagSearchInFilenames was
+				// requested
+				fileNames := make([]string, 0, len(fileNamesMap))
+				for name := range fileNamesMap {
+					fileNames = append(fileNames, name)
+				}
+				sort.Strings(fileNames)
+				for _, name := range fileNames {
+					res := fileNamesMap[name]
+					repoName := repoNameFromRes(res)
+					fmt.Printf(
+						"%s:%s:%s (%s)\n\n",
+						b.Name(),
+						textBold.Sprint(toAnsiURL(res.RepoURL, repoName)),
+						textBold.Sprint(toAnsiURL(res.FileURL, res.Path)),
+						textBold.Sprint(res.Branch),
+					)
+				}
+				numResults = len(fileNames)
 			}
 			st.results = numResults
 			stats = append(stats, st)
