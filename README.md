@@ -26,6 +26,7 @@ Feature matrix:
 | Colorized output         | ✅       | ✅     | ✅      |
 | Highlight search pattern | ✅       | ✅     | ✅      |
 | Limit to N results       | ❌       | ❌     | ❌      |
+| Sorting                  | ❌       | ❌     | ❌      |
 | Rate limiting            | ✅       | ❌     | N/A     |
 | Response caching         | ❌       | ❌     | N/A     |
 | Case sensitivity         | ❌       | ❌     | ✅      |
