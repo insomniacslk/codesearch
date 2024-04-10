@@ -101,81 +101,88 @@ func (g *Csearch) toResult(pattern string, ix *index.Index, grep regexp.Grep, po
 				return nil, fmt.Errorf("match reader failed: %s", e)
 			}
 			// no output, no error, just continue
-			logrus.Debugf("Skipping empty line")
+			logrus.Debugf("Skipping empty file results")
 			continue
 		}
-		parts := strings.SplitN(o, ":", 2)
-		if len(parts) < 2 {
-			return nil, fmt.Errorf("malformed result line: has fewer than 2 components. Line: %q", o)
-		}
-		lineno64, err := strconv.ParseInt(parts[0], 10, 64)
-		if err != nil {
-			return nil, fmt.Errorf("invalid line number: %w", err)
-		}
-		lineno := int(lineno64)
-		line := parts[1]
-		newlineIdx := strings.Index(line, "\n")
-		if newlineIdx != -1 {
-			line = line[:newlineIdx]
-		}
-		// find indexed path
-		var indexedPath string
-		for _, p := range ix.Paths() {
-			if strings.HasPrefix(name, p) {
-				indexedPath = p
-				break
+		olines := strings.Split(o, "\n")
+		for _, oline := range olines {
+			if oline == "" {
+				// skip empty lines reulting from the newline split
+				continue
 			}
-		}
-		if indexedPath == "" {
-			return nil, fmt.Errorf("no indexed path found for %q", name)
-		}
-		var before, after []string
-		if g.linesBefore > 0 || g.linesAfter > 0 {
-			fullText, err := os.ReadFile(name)
+			parts := strings.SplitN(oline, ":", 2)
+			if len(parts) < 2 {
+				return nil, fmt.Errorf("malformed result line: has fewer than 2 components. Line: %q", oline)
+			}
+			lineno64, err := strconv.ParseInt(parts[0], 10, 64)
 			if err != nil {
-				return nil, fmt.Errorf("failed to read file %q: %w", name, err)
+				return nil, fmt.Errorf("invalid line number: %w", err)
 			}
-			lines := strings.Split(string(fullText), "\n")
-			indexBefore := lineno - g.linesBefore
-			if indexBefore < 0 {
-				indexBefore = 0
+			lineno := int(lineno64)
+			line := parts[1]
+			newlineIdx := strings.Index(line, "\n")
+			if newlineIdx != -1 {
+				line = line[:newlineIdx]
 			}
-			indexAfter := lineno + g.linesAfter
-			if indexAfter > len(lines) {
-				indexAfter = len(lines)
+			// find indexed path
+			var indexedPath string
+			for _, p := range ix.Paths() {
+				if strings.HasPrefix(name, p) {
+					indexedPath = p
+					break
+				}
 			}
-			before = lines[indexBefore:lineno]
-			after = lines[lineno+1 : indexAfter+1]
+			if indexedPath == "" {
+				return nil, fmt.Errorf("no indexed path found for %q", name)
+			}
+			var before, after []string
+			if g.linesBefore > 0 || g.linesAfter > 0 {
+				fullText, err := os.ReadFile(name)
+				if err != nil {
+					return nil, fmt.Errorf("failed to read file %q: %w", name, err)
+				}
+				lines := strings.Split(string(fullText), "\n")
+				indexBefore := lineno - g.linesBefore
+				if indexBefore < 0 {
+					indexBefore = 0
+				}
+				indexAfter := lineno + g.linesAfter
+				if indexAfter > len(lines) {
+					indexAfter = len(lines)
+				}
+				before = lines[indexBefore:lineno]
+				after = lines[lineno+1 : indexAfter+1]
+			}
+			// find start and end offsets for highlight
+			offsets := re.FindAllStringIndex(line, -1)
+			// TODO use the offsets after the first one, once multiple highlight
+			// support is added to the Backend interface
+			var start, end int
+			if len(offsets) > 0 {
+				start, end = offsets[0][0], offsets[0][1]
+			}
+			shortName := name
+			if strings.HasPrefix(name, indexedPath) {
+				shortName = name[len(indexedPath):]
+				shortName = strings.TrimLeft(shortName, "/")
+			}
+			result := Result{
+				Backend:   g.Name(),
+				Path:      shortName,
+				RepoURL:   "file://" + indexedPath,
+				FileURL:   "file://" + name,
+				Owner:     "",
+				RepoName:  indexedPath,
+				Branch:    "",
+				Context:   ResultContext{Before: before, After: after},
+				Lineno:    lineno,
+				Line:      line,
+				Highlight: [2]int{start, end},
+				// TODO: IsFilename
+				//IsFilename: true/false
+			}
+			results = append(results, result)
 		}
-		// find start and end offsets for highlight
-		offsets := re.FindAllStringIndex(line, -1)
-		// TODO use the offsets after the first one, once multiple highlight
-		// support is added to the Backend interface
-		var start, end int
-		if len(offsets) > 0 {
-			start, end = offsets[0][0], offsets[0][1]
-		}
-		shortName := name
-		if strings.HasPrefix(name, indexedPath) {
-			shortName = name[len(indexedPath):]
-			shortName = strings.TrimLeft(shortName, "/")
-		}
-		result := Result{
-			Backend:   g.Name(),
-			Path:      shortName,
-			RepoURL:   "file://" + indexedPath,
-			FileURL:   "file://" + name,
-			Owner:     "",
-			RepoName:  indexedPath,
-			Branch:    "",
-			Context:   ResultContext{Before: before, After: after},
-			Lineno:    lineno,
-			Line:      line,
-			Highlight: [2]int{start, end},
-			// TODO: IsFilename
-			//IsFilename: true/false
-		}
-		results = append(results, result)
 	}
 	return results, nil
 }
