@@ -60,6 +60,14 @@ func (g *Csearch) SetSearchInFilenames(v bool) {
 	g.searchInFilenames = v
 }
 
+func removePathPrefix(s, prefix string) string {
+	if strings.HasPrefix(s, prefix) {
+		s = s[len(prefix):]
+		s = strings.TrimLeft(s, "/")
+	}
+	return s
+}
+
 func (g *Csearch) Search(searchString string, opts ...Opt) (Results, error) {
 	for _, opt := range opts {
 		opt(g)
@@ -77,11 +85,12 @@ func (g *Csearch) Search(searchString string, opts ...Opt) (Results, error) {
 			return nil, fmt.Errorf("failed to compile pattern for indexing: %w", err)
 		}
 		var results Results
-		files := make(map[string]string)
 		for _, path := range ix.Paths() {
+			files := make(map[string]string)
 			err = filepath.Walk(path, func(path string, info os.FileInfo, err error) error {
-				if err == nil && re.MatchString(info.Name()) {
-					files[info.Name()] = path
+				shortName := removePathPrefix(info.Name(), path)
+				if err == nil && re.MatchString(shortName) {
+					files[shortName] = path
 				}
 				return nil
 			})
@@ -89,20 +98,15 @@ func (g *Csearch) Search(searchString string, opts ...Opt) (Results, error) {
 				return nil, fmt.Errorf("failed to walk the source tree: %w", err)
 			}
 			for name, path := range files {
-				shortName := name
-				if strings.HasPrefix(name, path) {
-					shortName = name[len(path):]
-					shortName = strings.TrimLeft(shortName, "/")
-				}
+				shortName := removePathPrefix(name, path)
 				result := Result{
-					Backend:  g.Name(),
-					Path:     shortName,
-					RepoURL:  "file://" + path,
-					FileURL:  "file://" + name,
-					Owner:    "",
-					RepoName: path,
-					// TODO: IsFilename
-					//IsFilename: true/false
+					Backend:    g.Name(),
+					Path:       shortName,
+					RepoURL:    "file://" + path,
+					FileURL:    "file://" + name,
+					Owner:      "",
+					RepoName:   path,
+					IsFilename: true,
 				}
 				results = append(results, result)
 			}
@@ -205,11 +209,7 @@ func (g *Csearch) toResult(pattern string, ix *index.Index, grep regexp.Grep, po
 			if len(offsets) > 0 {
 				start, end = offsets[0][0], offsets[0][1]
 			}
-			shortName := name
-			if strings.HasPrefix(name, indexedPath) {
-				shortName = name[len(indexedPath):]
-				shortName = strings.TrimLeft(shortName, "/")
-			}
+			shortName := removePathPrefix(name, indexedPath)
 			result := Result{
 				Backend:   g.Name(),
 				Path:      shortName,

@@ -235,6 +235,7 @@ var searchCmd = &cobra.Command{
 				codesearch.WithLinesBefore(flagSearchContextBefore),
 				codesearch.WithLinesAfter(flagSearchContextAfter),
 				codesearch.WithCaseInsensitive(flagCaseInsensitive),
+				codesearch.WithSearchInFilenames(flagSearchInFilenames),
 			)
 			if err != nil {
 				logrus.Fatalf("Failed to search with backend %q: %v", b.Name(), err)
