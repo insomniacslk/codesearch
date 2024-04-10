@@ -32,6 +32,7 @@ var (
 	flagSearchContextBefore int
 	flagSearchContextAfter  int
 	flagCaseInsensitive     bool
+	flagLimit               uint
 
 	searchBackends string
 
@@ -57,6 +58,7 @@ func init() {
 	searchCmd.PersistentFlags().IntVarP(&flagSearchContextBefore, "before", "B", 0, "Number of context lines to show before the result")
 	searchCmd.PersistentFlags().IntVarP(&flagSearchContextAfter, "after", "A", 0, "Number of context lines to show after the result")
 	searchCmd.PersistentFlags().BoolVarP(&flagCaseInsensitive, "case-insensitive", "i", false, "Case-insensitive search")
+	searchCmd.PersistentFlags().UintVarP(&flagLimit, "limit", "l", 0, "Limit the amount of results that are printed per backend. 0 means no limit")
 
 	rootCmd.AddCommand(searchCmd)
 	rootCmd.AddCommand(listCmd)
@@ -198,7 +200,10 @@ var searchCmd = &cobra.Command{
 				duration: time.Since(start),
 			}
 			numResults := 0
-			for _, res := range results {
+			for idx, res := range results {
+				if flagLimit > 0 && uint(idx) >= flagLimit {
+					break
+				}
 				if flagSearchInFilenames {
 					// we are searching the pattern in the file name
 					if strings.Contains(strings.ToLower(res.Path), strings.ToLower(searchString)) {
