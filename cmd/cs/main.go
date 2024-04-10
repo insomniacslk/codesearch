@@ -3,6 +3,7 @@ package main
 import (
 	_ "embed"
 	"fmt"
+	"log"
 	"os"
 	"sort"
 	"strings"
@@ -177,6 +178,12 @@ var searchCmd = &cobra.Command{
 				backendNames = append(backendNames, b)
 			}
 		}
+		// get sorter to sort results later
+		sort := getSorter(flagSort)
+		if sort == nil {
+			log.Fatalf("Invalid value for --sort")
+		}
+
 		searchString := strings.Join(args, " ")
 		fmt.Fprintf(os.Stderr, "Searching %q on %q\n", searchString, backendNames)
 		backends := make([]codesearch.Backend, 0, len(backendNames))
@@ -225,7 +232,6 @@ var searchCmd = &cobra.Command{
 				duration: time.Since(start),
 			}
 			// sort the results, if requested
-			sort := getSorter(flagSort)
 			results = sort(results)
 			numResults := 0
 			for idx, res := range results {
