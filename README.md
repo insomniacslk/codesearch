@@ -38,6 +38,7 @@ Feature matrix:
 Other general features:
 * [ ] Common syntax for all backends
 * [ ] Server-side search
+* [ ] Custom colour scheme
 
 
 NOTE: there is no common syntax for searching, so for advanced queries you must know
