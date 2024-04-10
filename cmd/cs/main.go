@@ -33,6 +33,7 @@ var (
 	flagSearchContextAfter  int
 	flagCaseInsensitive     bool
 	flagLimit               uint
+	flagSort                string
 
 	searchBackends string
 
@@ -59,6 +60,7 @@ func init() {
 	searchCmd.PersistentFlags().IntVarP(&flagSearchContextAfter, "after", "A", 0, "Number of context lines to show after the result")
 	searchCmd.PersistentFlags().BoolVarP(&flagCaseInsensitive, "case-insensitive", "i", false, "Case-insensitive search")
 	searchCmd.PersistentFlags().UintVarP(&flagLimit, "limit", "l", 0, "Limit the amount of results that are printed per backend. 0 means no limit")
+	searchCmd.PersistentFlags().StringVarP(&flagSort, "sort", "s", "", "Sort the results. Possible values: \"a-z\", \"z-a\"")
 
 	rootCmd.AddCommand(searchCmd)
 	rootCmd.AddCommand(listCmd)
@@ -121,6 +123,29 @@ var configExampleCmd = &cobra.Command{
 	Run: func(cmd *cobra.Command, args []string) {
 		fmt.Println(configFileExample)
 	},
+}
+
+type sorter func(codesearch.Results) codesearch.Results
+
+func getSorter(method string) sorter {
+	switch method {
+	case "a-z":
+		return func(r codesearch.Results) codesearch.Results {
+			sort.Slice(r, func(i, j int) bool { return r[i].Path < r[j].Path })
+			return r
+		}
+	case "z-a":
+		return func(r codesearch.Results) codesearch.Results {
+			sort.Slice(r, func(i, j int) bool { return r[i].Path > r[j].Path })
+			return r
+		}
+	case "":
+		return func(r codesearch.Results) codesearch.Results {
+			return r
+		}
+	default:
+		return nil
+	}
 }
 
 var searchCmd = &cobra.Command{
@@ -199,6 +224,9 @@ var searchCmd = &cobra.Command{
 				name:     b.Name(),
 				duration: time.Since(start),
 			}
+			// sort the results, if requested
+			sort := getSorter(flagSort)
+			results = sort(results)
 			numResults := 0
 			for idx, res := range results {
 				if flagLimit > 0 && uint(idx) >= flagLimit {
