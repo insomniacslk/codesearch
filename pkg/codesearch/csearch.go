@@ -86,20 +86,21 @@ func (g *Csearch) Search(searchString string, opts ...Opt) (Results, error) {
 		}
 		var results Results
 		for _, indexedPath := range ix.Paths() {
-			files := make(map[string]string)
+			files := make(map[string]struct{})
 			err = filepath.Walk(indexedPath, func(path string, info os.FileInfo, err error) error {
 				shortName := removePathPrefix(info.Name(), path)
 				if err == nil && re.MatchString(shortName) {
-					files[shortName] = path
+					logrus.Debugf("Adding file %s", path)
+					files[path] = struct{}{}
 				}
 				return nil
 			})
 			if err != nil {
 				return nil, fmt.Errorf("failed to walk the source tree: %w", err)
 			}
-			for name, path := range files {
+			for path := range files {
 				shortName := removePathPrefix(path, indexedPath)
-				logrus.Debugf("indexPath=%s path=%s name=%s shortName=%s", indexedPath, path, name, shortName)
+				logrus.Debugf("indexPath=%s path=%s shortName=%s", indexedPath, path, shortName)
 				result := Result{
 					Backend:    g.Name(),
 					Path:       shortName,
