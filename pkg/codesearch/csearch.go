@@ -85,9 +85,9 @@ func (g *Csearch) Search(searchString string, opts ...Opt) (Results, error) {
 			return nil, fmt.Errorf("failed to compile pattern for indexing: %w", err)
 		}
 		var results Results
-		for _, path := range ix.Paths() {
+		for _, indexedPath := range ix.Paths() {
 			files := make(map[string]string)
-			err = filepath.Walk(path, func(path string, info os.FileInfo, err error) error {
+			err = filepath.Walk(indexedPath, func(path string, info os.FileInfo, err error) error {
 				shortName := removePathPrefix(info.Name(), path)
 				if err == nil && re.MatchString(shortName) {
 					files[shortName] = path
@@ -98,14 +98,15 @@ func (g *Csearch) Search(searchString string, opts ...Opt) (Results, error) {
 				return nil, fmt.Errorf("failed to walk the source tree: %w", err)
 			}
 			for name, path := range files {
-				shortName := removePathPrefix(name, path)
+				shortName := removePathPrefix(path, indexedPath)
+				logrus.Infof("indexPath=%s path=%s name=%s shortName=%s", indexedPath, path, name, shortName)
 				result := Result{
 					Backend:    g.Name(),
 					Path:       shortName,
-					RepoURL:    "file://" + path,
-					FileURL:    "file://" + name,
+					RepoURL:    "file://" + indexedPath,
+					FileURL:    "file://" + path,
 					Owner:      "",
-					RepoName:   path,
+					RepoName:   indexedPath,
 					IsFilename: true,
 				}
 				results = append(results, result)
