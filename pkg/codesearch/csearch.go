@@ -99,7 +99,7 @@ func (g *Csearch) Search(searchString string, opts ...Opt) (Results, error) {
 			}
 			for name, path := range files {
 				shortName := removePathPrefix(path, indexedPath)
-				logrus.Infof("indexPath=%s path=%s name=%s shortName=%s", indexedPath, path, name, shortName)
+				logrus.Debugf("indexPath=%s path=%s name=%s shortName=%s", indexedPath, path, name, shortName)
 				result := Result{
 					Backend:    g.Name(),
 					Path:       shortName,
