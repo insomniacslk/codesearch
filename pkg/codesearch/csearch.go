@@ -11,6 +11,7 @@ import (
 
 	"github.com/google/codesearch/index"
 	"github.com/google/codesearch/regexp"
+	"github.com/mitchellh/go-homedir"
 	"github.com/sirupsen/logrus"
 )
 
@@ -28,6 +29,11 @@ func (g *Csearch) New(name string, params BackendParams) (Backend, error) {
 	indexFile := params.GetString("index_file")
 	if indexFile == nil {
 		return nil, fmt.Errorf("missing 'index_file' parameter")
+	}
+	var err error
+	*indexFile, err = homedir.Expand(*indexFile)
+	if err != nil {
+		return nil, fmt.Errorf("failed to expand path %q: %v", indexFile, err)
 	}
 	gl := Csearch{
 		name:      name,
