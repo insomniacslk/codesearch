@@ -154,12 +154,15 @@ func (g *Gitlab) Search(searchString string, opts ...Opt) (Results, error) {
 		if err != nil {
 			return nil, fmt.Errorf("failed to get project list: %w", err)
 		}
-		projectID := 0
+		projectID := -1
 		for _, proj := range projects {
 			if proj.Name == g.project {
 				projectID = proj.ID
 				break
 			}
+		}
+		if projectID == -1 {
+			return nil, fmt.Errorf("project %q not found", g.project)
 		}
 		sopts := gitlab.SearchOptions{ListOptions: gitlab.ListOptions{PerPage: 100}}
 		for {
