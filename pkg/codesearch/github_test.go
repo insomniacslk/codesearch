@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/google/go-github/v60/github"
+	"github.com/sirupsen/logrus"
 )
 
 func rateLimitError(reset time.Time) error {
@@ -398,5 +399,74 @@ func TestGithubSearchDirectoryResponse(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "no file content") {
 		t.Errorf("got error %q, want it to mention missing file content", err)
+	}
+}
+
+// TestGithubSearchSparseResult covers results where GitHub omits optional
+// fields. The old code dereferenced them straight into Debugf arguments,
+// which Go evaluates eagerly, so these panicked whether or not debug logging
+// was enabled.
+func TestGithubSearchSparseResult(t *testing.T) {
+	for _, tt := range []struct {
+		name string
+		item string
+	}{
+		{
+			name: "no sha or html_url",
+			item: `{"name":"f.go","path":"src/f.go",
+				"repository":{"name":"repo","owner":{"login":"testorg"}},
+				"text_matches":[{"fragment":"needle","matches":[{"indices":[0,6]}]}]}`,
+		},
+		{
+			name: "no repository",
+			item: `{"name":"f.go","path":"src/f.go","sha":"x","html_url":"https://example.com/f",
+				"text_matches":[{"fragment":"needle","matches":[{"indices":[0,6]}]}]}`,
+		},
+		{
+			name: "no text match metadata",
+			item: `{"name":"f.go","path":"src/f.go","sha":"x","html_url":"https://example.com/f",
+				"repository":{"name":"repo","owner":{"login":"testorg"}},
+				"text_matches":[{"fragment":"needle","matches":[{"indices":[0,6]}]}]}`,
+		},
+		{
+			name: "match without indices",
+			item: `{"name":"f.go","path":"src/f.go","sha":"x","html_url":"https://example.com/f",
+				"repository":{"name":"repo","owner":{"login":"testorg"}},
+				"text_matches":[{"fragment":"needle","matches":[{"text":"needle"}]}]}`,
+		},
+		{
+			name: "empty text match list",
+			item: `{"name":"f.go","path":"src/f.go","sha":"x","html_url":"https://example.com/f",
+				"repository":{"name":"repo","owner":{"login":"testorg"}},"text_matches":[]}`,
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			srv := githubServer(t, tt.item, fileContents(base64File("needle here\n")))
+			defer srv.Close()
+			// must not panic; an error is an acceptable outcome
+			if _, err := newGithubBackend(t, srv.URL).Search("needle"); err != nil {
+				t.Logf("search returned error (acceptable): %v", err)
+			}
+		})
+	}
+}
+
+// TestGithubDebugLoggingDoesNotPanic pins the reason the above crashed even
+// with debug output disabled: the arguments are evaluated before Debugf is
+// ever called.
+func TestGithubDebugLoggingDoesNotPanic(t *testing.T) {
+	old := logrus.GetLevel()
+	logrus.SetLevel(logrus.DebugLevel)
+	defer logrus.SetLevel(old)
+
+	srv := githubServer(t,
+		`{"name":"f.go","path":"src/f.go",
+			"repository":{"name":"repo","owner":{"login":"testorg"}},
+			"text_matches":[{"fragment":"needle","matches":[{"indices":[0,6]}]}]}`,
+		fileContents(base64File("needle here\n")))
+	defer srv.Close()
+
+	if _, err := newGithubBackend(t, srv.URL).Search("needle"); err != nil {
+		t.Logf("search returned error (acceptable): %v", err)
 	}
 }

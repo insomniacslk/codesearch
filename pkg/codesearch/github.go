@@ -190,20 +190,20 @@ func (g *Github) toResult(ctx context.Context, client *github.Client, csresults 
 	var results Results
 	for _, res := range csresults {
 		logrus.Debugf("Result:\n")
-		logrus.Debugf("  Name: %s:\n", *res.Name)
-		logrus.Debugf("  Path: %s:\n", *res.Path)
-		logrus.Debugf("  SHA: %s:\n", *res.SHA)
-		logrus.Debugf("  HTMLURL: %s:\n", *res.HTMLURL)
+		logrus.Debugf("  Name: %s:\n", res.GetName())
+		logrus.Debugf("  Path: %s:\n", res.GetPath())
+		logrus.Debugf("  SHA: %s:\n", res.GetSHA())
+		logrus.Debugf("  HTMLURL: %s:\n", res.GetHTMLURL())
 		logrus.Debugf("  Repository: %+v:\n", res.Repository)
 		logrus.Debugf("  TextMatches:\n")
 		for idx, tm := range res.TextMatches {
-			fullPath := fmt.Sprintf("%s/%s/%s", *res.Repository.Owner.Login, *res.Repository.Name, *res.Path)
+			fullPath := fmt.Sprintf("%s/%s/%s", res.GetRepository().GetOwner().GetLogin(), res.GetRepository().GetName(), res.GetPath())
 			var rc *github.RepositoryContent
 			err := retry(ctx, func() error {
 				logrus.Debugf("Fetching file content, owner=%q repo=%q path=%q",
-					*res.Repository.Owner.Login,
-					*res.Repository.Name,
-					*res.Path,
+					res.GetRepository().GetOwner().GetLogin(),
+					res.GetRepository().GetName(),
+					res.GetPath(),
 				)
 				var (
 					resp *github.Response
@@ -211,9 +211,9 @@ func (g *Github) toResult(ctx context.Context, client *github.Client, csresults 
 				)
 				rc, _, resp, err = client.Repositories.GetContents(
 					ctx,
-					*res.Repository.Owner.Login,
-					*res.Repository.Name,
-					*res.Path,
+					res.GetRepository().GetOwner().GetLogin(),
+					res.GetRepository().GetName(),
+					res.GetPath(),
 					&github.RepositoryContentGetOptions{},
 				)
 				logrus.Debugf("Response: %+v", resp)
@@ -236,19 +236,25 @@ func (g *Github) toResult(ctx context.Context, client *github.Client, csresults 
 				return nil, fmt.Errorf("failed to read content of file %q: %w", fullPath, err)
 			}
 			// find fragment in full text
-			fragmentStart := strings.Index(fullText, *tm.Fragment)
+			fragmentStart := strings.Index(fullText, tm.GetFragment())
 			if fragmentStart == -1 {
 				return nil, fmt.Errorf("code fragment not found in full file content")
 			}
 
 			lines := strings.Split(fullText, "\n")
 			logrus.Debugf("    %d) text match:\n", idx+1)
-			logrus.Debugf("        ObjectURL: %s\n", *tm.ObjectURL)
-			logrus.Debugf("        ObjectType: %s\n", *tm.ObjectType)
-			logrus.Debugf("        Property: %s\n", *tm.Property)
-			logrus.Debugf("        Fragment: %s\n", *tm.Fragment)
+			logrus.Debugf("        ObjectURL: %s\n", tm.GetObjectURL())
+			logrus.Debugf("        ObjectType: %s\n", tm.GetObjectType())
+			logrus.Debugf("        Property: %s\n", tm.GetProperty())
+			logrus.Debugf("        Fragment: %s\n", tm.GetFragment())
 			logrus.Debugf("        Matches:\n")
 			for _, match := range tm.Matches {
+				// indices is documented as a start/end pair but is omitted
+				// entirely for some match kinds
+				if match == nil || len(match.Indices) < 2 {
+					logrus.Debugf("Skipping match with no indices")
+					continue
+				}
 				// start of the highlight, relative to the full file content
 				start := fragmentStart + match.Indices[0]
 				length := match.Indices[1] - match.Indices[0]
@@ -264,9 +270,9 @@ func (g *Github) toResult(ctx context.Context, client *github.Client, csresults 
 				}
 				line := lines[lineno-1]
 				// try adding line number
-				fileURLwithLineno, err := url.Parse(*res.HTMLURL)
+				fileURLwithLineno, err := url.Parse(res.GetHTMLURL())
 				if err != nil {
-					return nil, fmt.Errorf("invalid file URL %q: %q", *res.HTMLURL, err)
+					return nil, fmt.Errorf("invalid file URL %q: %q", res.GetHTMLURL(), err)
 				}
 				fileURLwithLineno.Fragment = fmt.Sprintf("L%d", lineno+1)
 				beforeIdx := lineno - 1 - g.linesBefore
@@ -286,11 +292,11 @@ func (g *Github) toResult(ctx context.Context, client *github.Client, csresults 
 						After:  lines[lineno:afterIdx],
 					},
 					Highlight: [2]int{startInLine, startInLine + length},
-					Path:      *res.Path,
-					RepoURL:   *res.Repository.HTMLURL,
+					Path:      res.GetPath(),
+					RepoURL:   res.GetRepository().GetHTMLURL(),
 					FileURL:   fileURLwithLineno.String(),
-					Owner:     *res.Repository.Owner.Login,
-					RepoName:  *res.Repository.Name,
+					Owner:     res.GetRepository().GetOwner().GetLogin(),
+					RepoName:  res.GetRepository().GetName(),
 				}
 				results = append(results, result)
 			}
