@@ -63,13 +63,22 @@ func writeConfig(t *testing.T, content string) string {
 	return path
 }
 
-// useConfigDir points the config search path at dir. configdir reads
-// XDG_CONFIG_HOME once in its own init, so it has to be told to reread it.
+// useConfigDir points the config search path at dir. Both variables are set
+// because configdir picks a different one per platform: XDG_CONFIG_HOME
+// everywhere except macOS and Windows, and $HOME/Library/Application Support on
+// macOS. It reads them once in its own init, so it has to be told to reread.
 func useConfigDir(t *testing.T, dir string) {
 	t.Helper()
 	t.Setenv("XDG_CONFIG_HOME", dir)
+	t.Setenv("HOME", dir)
 	configdir.Refresh()
 	t.Cleanup(configdir.Refresh)
+
+	// whichever rule applies, the search path has to land inside dir, or the
+	// test is silently reading the real user's configuration
+	if got := configPath(); !strings.HasPrefix(got, dir) {
+		t.Fatalf("config path %q is outside the test directory %q", got, dir)
+	}
 }
 
 // setFlag simulates the flag being passed on the command line.
@@ -593,8 +602,10 @@ func TestSplitHighlight(t *testing.T) {
 // TestRunSearchesIsConcurrent checks that backends are queried in parallel:
 // run sequentially, four 100ms backends would take at least 400ms.
 func TestRunSearchesIsConcurrent(t *testing.T) {
+	// long enough that the gap between concurrent and sequential survives a
+	// slow or loaded CI runner
 	const (
-		delay = 100 * time.Millisecond
+		delay = 250 * time.Millisecond
 		n     = 4
 	)
 	backends := make([]codesearch.Backend, 0, n)
