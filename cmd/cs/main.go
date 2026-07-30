@@ -2,7 +2,9 @@ package main
 
 import (
 	_ "embed"
+	"errors"
 	"fmt"
+	"io/fs"
 	"log"
 	"os"
 	"sort"
@@ -66,40 +68,93 @@ func init() {
 	rootCmd.AddCommand(searchCmd)
 	rootCmd.AddCommand(listCmd)
 	rootCmd.AddCommand(configExampleCmd)
+
+	bindFlags()
 }
 
-func initConfig() {
-	if configFile != "" {
-		// Use config file from the flag.
-		viper.SetConfigFile(configFile)
-	} else {
-		configDir := configdir.LocalConfig(progname)
-		viper.SetConfigName("config")
-		viper.SetConfigType("yaml")
-		viper.AddConfigPath(configDir)
+// flagToConfigKey maps command line flag names to configuration keys. Viper
+// resolves a bound key to the command line value if the flag was set, then to
+// the config file value, and finally to the flag default, which gives the
+// command line precedence over the config file.
+var flagToConfigKey = map[string]string{
+	"debug":               "debug",
+	"stats":               "stats",
+	"limit":               "defaults.limit",
+	"sort":                "defaults.sort",
+	"before":              "defaults.before",
+	"after":               "defaults.after",
+	"case-insensitive":    "defaults.case_insensitive",
+	"search-in-filenames": "defaults.search_in_filenames",
+	"match-filename":      "defaults.match_filename",
+}
 
-		viper.AutomaticEnv()
-
-		if err := viper.ReadInConfig(); err != nil {
-			if _, ok := err.(viper.ConfigFileNotFoundError); ok {
-				// TODO create new config file
-				logrus.Fatalf("Config file not found")
-			} else {
-				logrus.Fatalf("Failed to read config file: %v", err)
-			}
+func bindFlags() {
+	for name, key := range flagToConfigKey {
+		f := rootCmd.PersistentFlags().Lookup(name)
+		if f == nil {
+			f = searchCmd.PersistentFlags().Lookup(name)
 		}
-		config := getConfig()
-		if err := viper.Unmarshal(&config); err != nil {
-			logrus.Fatalf("Failed to unmarshal config: %v", err)
+		if f == nil {
+			panic(fmt.Sprintf("no such flag: %q", name))
 		}
-		if err := config.Validate(); err != nil {
-			logrus.Fatalf("Invalid config: %v", err)
+		if err := viper.BindPFlag(key, f); err != nil {
+			panic(fmt.Sprintf("failed to bind flag %q: %v", name, err))
 		}
 	}
+}
+
+// resolveFlags applies the effective value of every bound flag, so that
+// settings coming from the config file are honoured when the flag was not
+// passed on the command line.
+func resolveFlags() {
+	flagDebug = viper.GetBool("debug")
+	flagStats = viper.GetBool("stats")
+	flagLimit = uint(viper.GetInt("defaults.limit"))
+	flagSort = viper.GetString("defaults.sort")
+	flagSearchContextBefore = viper.GetInt("defaults.before")
+	flagSearchContextAfter = viper.GetInt("defaults.after")
+	flagCaseInsensitive = viper.GetBool("defaults.case_insensitive")
+	flagSearchInFilenames = viper.GetBool("defaults.search_in_filenames")
+	flagMatchFilename = viper.GetString("defaults.match_filename")
 
 	if flagDebug {
 		logrus.SetLevel(logrus.DebugLevel)
 	}
+}
+
+func initConfig() {
+	if flagDebug {
+		logrus.SetLevel(logrus.DebugLevel)
+	}
+	if configFile != "" {
+		viper.SetConfigFile(configFile)
+	} else {
+		viper.SetConfigName("config")
+		viper.SetConfigType("yaml")
+		viper.AddConfigPath(configdir.LocalConfig(progname))
+	}
+	viper.AutomaticEnv()
+
+	if err := viper.ReadInConfig(); err != nil {
+		// SetConfigFile reports a missing file as a path error rather than as
+		// ConfigFileNotFoundError, which only covers the search-path case.
+		if _, ok := err.(viper.ConfigFileNotFoundError); ok || errors.Is(err, fs.ErrNotExist) {
+			// TODO create new config file
+			logrus.Fatalf("Config file not found")
+		}
+		logrus.Fatalf("Failed to read config file: %v", err)
+	}
+	logrus.Debugf("Using config file %q", viper.ConfigFileUsed())
+
+	config := getConfig()
+	if err := viper.Unmarshal(config); err != nil {
+		logrus.Fatalf("Failed to unmarshal config: %v", err)
+	}
+	if err := config.Validate(); err != nil {
+		logrus.Fatalf("Invalid config: %v", err)
+	}
+
+	resolveFlags()
 }
 
 var listCmd = &cobra.Command{

@@ -3,6 +3,29 @@
 # all the available backends.
 default_backends: [github_yourname]
 
+# Print debug messages and per-backend statistics. Equivalent to --debug and
+# --stats.
+debug: false
+stats: false
+
+# Default values for the search options. Anything passed on the command line
+# takes precedence over these.
+defaults:
+  # Maximum number of results printed per backend. 0 means no limit. Same as
+  # --limit.
+  limit: 0
+  # Sort order for the results, "a-z" or "z-a". Empty means backend order. Same
+  # as --sort.
+  sort: ""
+  # Number of context lines shown before and after each result. Same as
+  # --before and --after.
+  before: 0
+  after: 0
+  # Same as --case-insensitive, --search-in-filenames and --match-filename.
+  case_insensitive: false
+  search_in_filenames: false
+  match_filename: ""
+
 # List of all the configured backends
 backends:
 
