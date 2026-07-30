@@ -10,7 +10,6 @@ import (
 	goregexp "regexp"
 	"strconv"
 	"strings"
-	"time"
 
 	"github.com/google/codesearch/index"
 	"github.com/google/codesearch/regexp"
@@ -19,13 +18,8 @@ import (
 
 // Csearch implements the Backend interface
 type Csearch struct {
-	name              string
-	indexFile         string
-	linesBefore       int
-	linesAfter        int
-	caseInsensitive   bool
-	searchInFilenames bool
-	timeout           time.Duration
+	name      string
+	indexFile string
 }
 
 func (g *Csearch) New(name string, params BackendParams) (Backend, error) {
@@ -77,26 +71,6 @@ func (g *Csearch) Supports(c Capability) bool {
 	return false
 }
 
-func (g *Csearch) SetCaseInsensitive(v bool) {
-	g.caseInsensitive = v
-}
-
-func (g *Csearch) SetLinesBefore(n int) {
-	g.linesBefore = n
-}
-
-func (g *Csearch) SetLinesAfter(n int) {
-	g.linesAfter = n
-}
-
-func (g *Csearch) SetSearchInFilenames(v bool) {
-	g.searchInFilenames = v
-}
-
-func (g *Csearch) SetTimeout(d time.Duration) {
-	g.timeout = d
-}
-
 func clamp(v, lo, hi int) int {
 	if v < lo {
 		return lo
@@ -137,19 +111,16 @@ func removePathPrefix(s, prefix string) string {
 	return strings.TrimPrefix(strings.TrimPrefix(s, strings.TrimRight(prefix, "/")), "/")
 }
 
-func (g *Csearch) Search(ctx context.Context, searchString string, opts ...Opt) (Results, error) {
-	for _, opt := range opts {
-		opt(g)
-	}
-	ctx, cancel := searchContext(ctx, g.timeout)
+func (g *Csearch) Search(ctx context.Context, searchString string, opts SearchOptions) (Results, error) {
+	ctx, cancel := searchContext(ctx, opts.Timeout)
 	defer cancel()
 
 	pattern := "(?m)" + searchString
-	if g.caseInsensitive {
+	if opts.CaseInsensitive {
 		pattern = "(?i)" + pattern
 	}
 	ix := index.Open(g.indexFile)
-	if g.searchInFilenames {
+	if opts.SearchInFilenames {
 		// get all the file names instead of doing a search on the cindex
 		logrus.Debugf("Searching in file names")
 		re, err := goregexp.Compile(pattern)
@@ -211,10 +182,10 @@ func (g *Csearch) Search(ctx context.Context, searchString string, opts ...Opt) 
 	}
 	q := index.RegexpQuery(re.Syntax)
 	post := ix.PostingQuery(q)
-	return g.toResult(ctx, pattern, ix, grep, post)
+	return g.toResult(ctx, pattern, ix, grep, post, opts)
 }
 
-func (g *Csearch) toResult(ctx context.Context, pattern string, ix *index.Index, grep regexp.Grep, post []uint32) (Results, error) {
+func (g *Csearch) toResult(ctx context.Context, pattern string, ix *index.Index, grep regexp.Grep, post []uint32, opts SearchOptions) (Results, error) {
 	var results Results
 	re, err := goregexp.Compile(pattern)
 	if err != nil {
@@ -271,13 +242,13 @@ func (g *Csearch) toResult(ctx context.Context, pattern string, ix *index.Index,
 				return nil, fmt.Errorf("no indexed path found for %q", name)
 			}
 			var before, after []string
-			if g.linesBefore > 0 || g.linesAfter > 0 {
+			if opts.LinesBefore > 0 || opts.LinesAfter > 0 {
 				fullText, err := os.ReadFile(name)
 				if err != nil {
 					return nil, fmt.Errorf("failed to read file %q: %w", name, err)
 				}
 				lines := strings.Split(string(fullText), "\n")
-				before, after = contextLines(lines, lineno, g.linesBefore, g.linesAfter)
+				before, after = contextLines(lines, lineno, opts.LinesBefore, opts.LinesAfter)
 			}
 			// find start and end offsets for highlight
 			offsets := re.FindAllStringIndex(line, -1)

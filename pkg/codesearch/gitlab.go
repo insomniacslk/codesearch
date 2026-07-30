@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"net/url"
 	"strings"
-	"time"
 
 	"github.com/sirupsen/logrus"
 	gitlab "gitlab.com/gitlab-org/api/client-go"
@@ -13,16 +12,11 @@ import (
 
 // Gitlab implements the Backend interface
 type Gitlab struct {
-	name              string
-	apiEndpoint       string
-	token             string
-	group             string
-	project           string
-	linesBefore       int
-	linesAfter        int
-	caseInsensitive   bool
-	searchInFilenames bool
-	timeout           time.Duration
+	name        string
+	apiEndpoint string
+	token       string
+	group       string
+	project     string
 }
 
 func (g *Gitlab) New(name string, params BackendParams) (Backend, error) {
@@ -77,30 +71,7 @@ func (g *Gitlab) Supports(Capability) bool {
 	return false
 }
 
-func (g *Gitlab) SetCaseInsensitive(v bool) {
-	g.caseInsensitive = v
-}
-
-func (g *Gitlab) SetLinesBefore(n int) {
-	g.linesBefore = n
-}
-
-func (g *Gitlab) SetLinesAfter(n int) {
-	g.linesAfter = n
-}
-
-func (g *Gitlab) SetSearchInFilenames(v bool) {
-	g.searchInFilenames = v
-}
-
-func (g *Gitlab) SetTimeout(d time.Duration) {
-	g.timeout = d
-}
-
-func (g *Gitlab) Search(ctx context.Context, searchString string, opts ...Opt) (Results, error) {
-	for _, opt := range opts {
-		opt(g)
-	}
+func (g *Gitlab) Search(ctx context.Context, searchString string, opts SearchOptions) (Results, error) {
 	u, err := url.Parse(g.apiEndpoint)
 	if err != nil {
 		return nil, fmt.Errorf("failed to parse Gitlab API endpoint: %w", err)
@@ -118,7 +89,7 @@ func (g *Gitlab) Search(ctx context.Context, searchString string, opts ...Opt) (
 	if err != nil {
 		return nil, fmt.Errorf("failed to set up Gitlab client: %w", err)
 	}
-	ctx, cancel := searchContext(ctx, g.timeout)
+	ctx, cancel := searchContext(ctx, opts.Timeout)
 	defer cancel()
 	withCtx := gitlab.WithContext(ctx)
 	// The search endpoints take an ID or a URL-encoded path, so the configured
@@ -160,10 +131,10 @@ func (g *Gitlab) Search(ctx context.Context, searchString string, opts ...Opt) (
 		}
 		sopts.Page = response.NextPage
 	}
-	return g.toResult(client, withCtx, searchString, blobs)
+	return g.toResult(client, withCtx, searchString, blobs, opts)
 }
 
-func (g *Gitlab) toResult(client *gitlab.Client, withCtx gitlab.RequestOptionFunc, searchString string, blobs []*gitlab.Blob) (Results, error) {
+func (g *Gitlab) toResult(client *gitlab.Client, withCtx gitlab.RequestOptionFunc, searchString string, blobs []*gitlab.Blob, opts SearchOptions) (Results, error) {
 	var (
 		results  Results
 		projects = make(map[int64]*gitlab.Project)
@@ -218,11 +189,11 @@ func (g *Gitlab) toResult(client *gitlab.Client, withCtx gitlab.RequestOptionFun
 			end = start + len(searchString)
 			// TODO fetch entire file content if the requested context is longer
 			// than the available one
-			beforeIdx := linenoInBlob - g.linesBefore
+			beforeIdx := linenoInBlob - opts.LinesBefore
 			if beforeIdx < 0 {
 				beforeIdx = 0
 			}
-			afterIdx := linenoInBlob + g.linesAfter + 1
+			afterIdx := linenoInBlob + opts.LinesAfter + 1
 			if afterIdx > len(lines) {
 				afterIdx = len(lines)
 			}

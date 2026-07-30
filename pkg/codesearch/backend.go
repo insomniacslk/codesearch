@@ -15,49 +15,26 @@ const (
 	CapSearchInFilenames Capability = "searching in file names"
 )
 
+// SearchOptions are the per-search settings a backend honours. They are passed
+// by value so that a backend holds nothing but its configuration: several
+// backends are searched concurrently, and options that were applied by mutating
+// the backend had to be written before the search read them, which is an
+// ordering the type could not enforce.
+type SearchOptions struct {
+	LinesBefore       int
+	LinesAfter        int
+	CaseInsensitive   bool
+	SearchInFilenames bool
+	// Timeout bounds a single backend. Zero means no deadline of its own.
+	Timeout time.Duration
+}
+
 type Backend interface {
 	New(name string, params BackendParams) (Backend, error)
 	Name() string
 	Type() string
 	Supports(c Capability) bool
-	SetLinesBefore(n int)
-	SetLinesAfter(n int)
-	SetCaseInsensitive(v bool)
-	SetSearchInFilenames(v bool)
-	SetTimeout(d time.Duration)
-	Search(ctx context.Context, terms string, opts ...Opt) (Results, error)
-}
-
-type Opt func(b Backend)
-
-func WithLinesBefore(n int) Opt {
-	return func(b Backend) {
-		b.SetLinesBefore(n)
-	}
-}
-
-func WithLinesAfter(n int) Opt {
-	return func(b Backend) {
-		b.SetLinesAfter(n)
-	}
-}
-
-func WithCaseInsensitive(v bool) Opt {
-	return func(b Backend) {
-		b.SetCaseInsensitive(v)
-	}
-}
-
-func WithSearchInFilenames(v bool) Opt {
-	return func(b Backend) {
-		b.SetSearchInFilenames(v)
-	}
-}
-
-func WithTimeout(d time.Duration) Opt {
-	return func(b Backend) {
-		b.SetTimeout(d)
-	}
+	Search(ctx context.Context, terms string, opts SearchOptions) (Results, error)
 }
 
 // searchContext bounds a single search with the backend timeout, on top of

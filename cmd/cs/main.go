@@ -342,7 +342,7 @@ type searchOutcome struct {
 // search is the slowest backend rather than the sum of all of them. Outcomes
 // are returned in the order the backends were given, not the order they
 // finished, so the output stays stable across runs.
-func runSearches(ctx context.Context, backends []codesearch.Backend, searchString string, opts ...codesearch.Opt) []searchOutcome {
+func runSearches(ctx context.Context, backends []codesearch.Backend, searchString string, opts codesearch.SearchOptions) []searchOutcome {
 	type indexed struct {
 		idx     int
 		outcome searchOutcome
@@ -351,7 +351,7 @@ func runSearches(ctx context.Context, backends []codesearch.Backend, searchStrin
 	for idx, b := range backends {
 		go func(idx int, b codesearch.Backend) {
 			start := time.Now()
-			results, err := b.Search(ctx, searchString, opts...)
+			results, err := b.Search(ctx, searchString, opts)
 			if err != nil {
 				logrus.Errorf("Backend %q failed: %v", b.Name(), err)
 			}
@@ -533,13 +533,13 @@ var searchCmd = &cobra.Command{
 		defer stop()
 
 		searchStart := time.Now()
-		outcomes := runSearches(ctx, backends, searchString,
-			codesearch.WithLinesBefore(flagSearchContextBefore),
-			codesearch.WithLinesAfter(flagSearchContextAfter),
-			codesearch.WithCaseInsensitive(flagCaseInsensitive),
-			codesearch.WithSearchInFilenames(flagSearchInFilenames),
-			codesearch.WithTimeout(flagTimeout),
-		)
+		outcomes := runSearches(ctx, backends, searchString, codesearch.SearchOptions{
+			LinesBefore:       flagSearchContextBefore,
+			LinesAfter:        flagSearchContextAfter,
+			CaseInsensitive:   flagCaseInsensitive,
+			SearchInFilenames: flagSearchInFilenames,
+			Timeout:           flagTimeout,
+		})
 		totalResults := 0
 		for i := range outcomes {
 			o := &outcomes[i]

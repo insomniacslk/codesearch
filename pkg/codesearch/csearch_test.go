@@ -229,7 +229,7 @@ func TestCsearchSearchInFilenames(t *testing.T) {
 		{"no match", "nosuchfile", nil},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
-			results, err := newCsearchBackend(t, indexFile).Search(context.Background(), tt.pattern, WithSearchInFilenames(true))
+			results, err := newCsearchBackend(t, indexFile).Search(context.Background(), tt.pattern, SearchOptions{SearchInFilenames: true})
 			if err != nil {
 				t.Fatalf("search failed: %v", err)
 			}
@@ -244,7 +244,7 @@ func TestCsearchSearchInFilenames(t *testing.T) {
 // a directory name does not report the directory itself as a hit.
 func TestCsearchSearchInFilenamesSkipsDirectories(t *testing.T) {
 	indexFile, _ := newTestIndex(t, filenameTree)
-	results, err := newCsearchBackend(t, indexFile).Search(context.Background(), "thing", WithSearchInFilenames(true))
+	results, err := newCsearchBackend(t, indexFile).Search(context.Background(), "thing", SearchOptions{SearchInFilenames: true})
 	if err != nil {
 		t.Fatalf("search failed: %v", err)
 	}
@@ -273,7 +273,7 @@ func TestCsearchSearchInFilenamesUnreadableDir(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = os.Chmod(locked, 0o755) })
 
-	results, err := newCsearchBackend(t, indexFile).Search(context.Background(), "main.go", WithSearchInFilenames(true))
+	results, err := newCsearchBackend(t, indexFile).Search(context.Background(), "main.go", SearchOptions{SearchInFilenames: true})
 	if err != nil {
 		t.Fatalf("search failed: %v", err)
 	}
@@ -349,7 +349,7 @@ func TestCsearchHonoursCancellation(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
-	_, err := newCsearchBackend(t, indexFile).Search(ctx, "needle")
+	_, err := newCsearchBackend(t, indexFile).Search(ctx, "needle", SearchOptions{})
 	if !errors.Is(err, context.Canceled) {
 		t.Errorf("got error %v, want context.Canceled", err)
 	}
@@ -361,7 +361,7 @@ func TestCsearchHonoursTimeout(t *testing.T) {
 	defer cancel()
 	time.Sleep(time.Millisecond)
 
-	_, err := newCsearchBackend(t, indexFile).Search(ctx, "needle")
+	_, err := newCsearchBackend(t, indexFile).Search(ctx, "needle", SearchOptions{})
 	if !errors.Is(err, context.DeadlineExceeded) {
 		t.Errorf("got error %v, want context.DeadlineExceeded", err)
 	}

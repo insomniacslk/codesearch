@@ -97,7 +97,7 @@ func TestGitlabAddressesScopeDirectly(t *testing.T) {
 			srv := httptest.NewServer(rec)
 			defer srv.Close()
 
-			if _, err := newGitlabBackend(t, srv.URL, tt.params).Search(context.Background(), "needle"); err != nil {
+			if _, err := newGitlabBackend(t, srv.URL, tt.params).Search(context.Background(), "needle", SearchOptions{}); err != nil {
 				t.Fatalf("search failed: %v", err)
 			}
 			if !rec.requested(tt.wantPath) {
@@ -152,7 +152,7 @@ func TestGitlabScopeBeyondFirstPage(t *testing.T) {
 			srv := httptest.NewServer(rec)
 			defer srv.Close()
 
-			results, err := newGitlabBackend(t, srv.URL, tt.params).Search(context.Background(), "needle")
+			results, err := newGitlabBackend(t, srv.URL, tt.params).Search(context.Background(), "needle", SearchOptions{})
 			if err != nil {
 				t.Fatalf("search failed: %v", err)
 			}
@@ -170,7 +170,7 @@ func TestGitlabUnknownScope(t *testing.T) {
 	srv := httptest.NewServer(rec)
 	defer srv.Close()
 
-	_, err := newGitlabBackend(t, srv.URL, BackendParams{"project": "missing"}).Search(context.Background(), "needle")
+	_, err := newGitlabBackend(t, srv.URL, BackendParams{"project": "missing"}).Search(context.Background(), "needle", SearchOptions{})
 	if err == nil {
 		t.Fatal("got nil error, want a failure for an unknown project")
 	}
@@ -204,7 +204,7 @@ func TestGitlabPaginatesBlobs(t *testing.T) {
 	srv := httptest.NewServer(rec)
 	defer srv.Close()
 
-	results, err := newGitlabBackend(t, srv.URL, BackendParams{}).Search(context.Background(), "needle")
+	results, err := newGitlabBackend(t, srv.URL, BackendParams{}).Search(context.Background(), "needle", SearchOptions{})
 	if err != nil {
 		t.Fatalf("search failed: %v", err)
 	}

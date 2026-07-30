@@ -14,15 +14,10 @@ import (
 
 // Github implements the Backend interface
 type Github struct {
-	name              string
-	apiEndpoint       string
-	token             string
-	org               string
-	linesBefore       int
-	linesAfter        int
-	caseInsensitive   bool
-	searchInFilenames bool
-	timeout           time.Duration
+	name        string
+	apiEndpoint string
+	token       string
+	org         string
 }
 
 func (g *Github) New(name string, params BackendParams) (Backend, error) {
@@ -64,33 +59,10 @@ func (g *Github) Supports(Capability) bool {
 	return false
 }
 
-func (g *Github) SetCaseInsensitive(v bool) {
-	g.caseInsensitive = v
-}
-
-func (g *Github) SetLinesBefore(n int) {
-	g.linesBefore = n
-}
-
-func (g *Github) SetLinesAfter(n int) {
-	g.linesAfter = n
-}
-
-func (g *Github) SetSearchInFilenames(v bool) {
-	g.searchInFilenames = v
-}
-
-func (g *Github) SetTimeout(d time.Duration) {
-	g.timeout = d
-}
-
-func (g *Github) Search(ctx context.Context, terms string, opts ...Opt) (Results, error) {
+func (g *Github) Search(ctx context.Context, terms string, opts SearchOptions) (Results, error) {
 	searchstring := terms
 	if g.org != "" {
 		searchstring = "org:" + g.org + " " + terms
-	}
-	for _, opt := range opts {
-		opt(g)
 	}
 	u, err := url.Parse(g.apiEndpoint)
 	if err != nil {
@@ -103,7 +75,7 @@ func (g *Github) Search(ctx context.Context, terms string, opts ...Opt) (Results
 			return nil, fmt.Errorf("failed to configure GitHub Enterprise URLs: %w", err)
 		}
 	}
-	ctx, cancel := searchContext(ctx, g.timeout)
+	ctx, cancel := searchContext(ctx, opts.Timeout)
 	defer cancel()
 
 	sopts := github.SearchOptions{TextMatch: true}
@@ -128,7 +100,7 @@ func (g *Github) Search(ctx context.Context, terms string, opts ...Opt) (Results
 		}
 		sopts.Page = response.NextPage
 	}
-	return g.toResult(ctx, client, csresults)
+	return g.toResult(ctx, client, csresults, opts)
 }
 
 const maxAttempts = 3
@@ -236,7 +208,7 @@ func (g *Github) fileContent(ctx context.Context, client *github.Client, cache m
 	return text, nil
 }
 
-func (g *Github) toResult(ctx context.Context, client *github.Client, csresults []*github.CodeResult) (Results, error) {
+func (g *Github) toResult(ctx context.Context, client *github.Client, csresults []*github.CodeResult, opts SearchOptions) (Results, error) {
 	var results Results
 	contents := make(map[string]string)
 	for _, res := range csresults {
@@ -296,11 +268,11 @@ func (g *Github) toResult(ctx context.Context, client *github.Client, csresults 
 					return nil, fmt.Errorf("invalid file URL %q: %q", res.GetHTMLURL(), err)
 				}
 				fileURLwithLineno.Fragment = fmt.Sprintf("L%d", lineno)
-				beforeIdx := lineno - 1 - g.linesBefore
+				beforeIdx := lineno - 1 - opts.LinesBefore
 				if beforeIdx < 0 {
 					beforeIdx = 0
 				}
-				afterIdx := lineno + g.linesAfter
+				afterIdx := lineno + opts.LinesAfter
 				if afterIdx > len(lines) {
 					afterIdx = len(lines)
 				}
