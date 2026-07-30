@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"os"
@@ -367,10 +368,17 @@ func (f *fakeBackend) SetLinesAfter(int)                     {}
 func (f *fakeBackend) SetCaseInsensitive(bool)               {}
 func (f *fakeBackend) SetSearchInFilenames(bool)             {}
 func (f *fakeBackend) SetTimeout(time.Duration)              {}
-func (f *fakeBackend) Search(string, ...codesearch.Opt) (codesearch.Results, error) {
+func (f *fakeBackend) Search(ctx context.Context, _ string, _ ...codesearch.Opt) (codesearch.Results, error) {
 	atomic.AddInt32(&f.calls, 1)
 	if f.delay > 0 {
-		time.Sleep(f.delay)
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-time.After(f.delay):
+		}
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
 	}
 	return f.results, f.err
 }
@@ -476,7 +484,7 @@ func TestRunSearchesKeepsGoingAfterAFailure(t *testing.T) {
 		&fakeBackend{name: "last", results: codesearch.Results{{Path: "b.go"}, {Path: "c.go"}}},
 	}
 
-	outcomes := runSearches(backends, "needle")
+	outcomes := runSearches(context.Background(), backends, "needle")
 
 	if len(outcomes) != len(backends) {
 		t.Fatalf("got %d outcomes, want %d", len(outcomes), len(backends))
@@ -523,7 +531,7 @@ func TestFailedSearches(t *testing.T) {
 
 func TestRunSearchesRecordsDuration(t *testing.T) {
 	backends := []codesearch.Backend{&fakeBackend{name: "slow", delay: 20 * time.Millisecond}}
-	outcomes := runSearches(backends, "needle")
+	outcomes := runSearches(context.Background(), backends, "needle")
 	if outcomes[0].duration < 20*time.Millisecond {
 		t.Errorf("got duration %s, want at least 20ms", outcomes[0].duration)
 	}
@@ -577,7 +585,7 @@ func TestRunSearchesIsConcurrent(t *testing.T) {
 	}
 
 	start := time.Now()
-	outcomes := runSearches(backends, "needle")
+	outcomes := runSearches(context.Background(), backends, "needle")
 	elapsed := time.Since(start)
 
 	if len(outcomes) != n {
@@ -598,7 +606,7 @@ func TestRunSearchesPreservesOrder(t *testing.T) {
 	}
 
 	for i := 0; i < 5; i++ {
-		outcomes := runSearches(backends, "needle")
+		outcomes := runSearches(context.Background(), backends, "needle")
 		var got []string
 		for _, o := range outcomes {
 			got = append(got, o.backend.Name())
@@ -620,7 +628,7 @@ func TestRunSearchesConcurrentFailures(t *testing.T) {
 		&fakeBackend{name: "bad", err: errors.New("boom")},
 		&fakeBackend{name: "ok2", delay: 10 * time.Millisecond, results: codesearch.Results{{Path: "b"}}},
 	}
-	outcomes := runSearches(backends, "needle")
+	outcomes := runSearches(context.Background(), backends, "needle")
 
 	if got := failedSearches(outcomes); len(got) != 1 {
 		t.Fatalf("got %d failures, want 1", len(got))
@@ -631,6 +639,31 @@ func TestRunSearchesConcurrentFailures(t *testing.T) {
 		}
 		if len(outcomes[i].results) != 1 {
 			t.Errorf("outcome %d: got %d results, want 1", i, len(outcomes[i].results))
+		}
+	}
+}
+
+// TestRunSearchesHonoursCancellation checks that cancelling the run stops the
+// backends instead of waiting for every one of them to finish.
+func TestRunSearchesHonoursCancellation(t *testing.T) {
+	backends := []codesearch.Backend{
+		&fakeBackend{name: "slow1", delay: 10 * time.Second},
+		&fakeBackend{name: "slow2", delay: 10 * time.Second},
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	go func() {
+		time.Sleep(20 * time.Millisecond)
+		cancel()
+	}()
+
+	start := time.Now()
+	outcomes := runSearches(ctx, backends, "needle")
+	if elapsed := time.Since(start); elapsed > 5*time.Second {
+		t.Errorf("took %s, want it to stop when cancelled", elapsed)
+	}
+	for _, o := range outcomes {
+		if !errors.Is(o.err, context.Canceled) {
+			t.Errorf("backend %q: got error %v, want context.Canceled", o.backend.Name(), o.err)
 		}
 	}
 }

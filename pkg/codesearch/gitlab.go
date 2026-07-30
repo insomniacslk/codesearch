@@ -1,6 +1,7 @@
 package codesearch
 
 import (
+	"context"
 	"fmt"
 	"net/url"
 	"strings"
@@ -96,7 +97,7 @@ func (g *Gitlab) SetTimeout(d time.Duration) {
 	g.timeout = d
 }
 
-func (g *Gitlab) Search(searchString string, opts ...Opt) (Results, error) {
+func (g *Gitlab) Search(ctx context.Context, searchString string, opts ...Opt) (Results, error) {
 	for _, opt := range opts {
 		opt(g)
 	}
@@ -117,7 +118,7 @@ func (g *Gitlab) Search(searchString string, opts ...Opt) (Results, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to set up Gitlab client: %w", err)
 	}
-	ctx, cancel := searchContext(g.timeout)
+	ctx, cancel := searchContext(ctx, g.timeout)
 	defer cancel()
 	withCtx := gitlab.WithContext(ctx)
 	// The search endpoints take an ID or a URL-encoded path, so the configured

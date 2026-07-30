@@ -84,7 +84,7 @@ func (g *Github) SetTimeout(d time.Duration) {
 	g.timeout = d
 }
 
-func (g *Github) Search(terms string, opts ...Opt) (Results, error) {
+func (g *Github) Search(ctx context.Context, terms string, opts ...Opt) (Results, error) {
 	searchstring := terms
 	if g.org != "" {
 		searchstring = "org:" + g.org + " " + terms
@@ -103,7 +103,7 @@ func (g *Github) Search(terms string, opts ...Opt) (Results, error) {
 			return nil, fmt.Errorf("failed to configure GitHub Enterprise URLs: %w", err)
 		}
 	}
-	ctx, cancel := searchContext(g.timeout)
+	ctx, cancel := searchContext(ctx, g.timeout)
 	defer cancel()
 
 	sopts := github.SearchOptions{TextMatch: true}

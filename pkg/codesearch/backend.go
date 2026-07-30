@@ -25,7 +25,7 @@ type Backend interface {
 	SetCaseInsensitive(v bool)
 	SetSearchInFilenames(v bool)
 	SetTimeout(d time.Duration)
-	Search(terms string, opts ...Opt) (Results, error)
+	Search(ctx context.Context, terms string, opts ...Opt) (Results, error)
 }
 
 type Opt func(b Backend)
@@ -60,13 +60,14 @@ func WithTimeout(d time.Duration) Opt {
 	}
 }
 
-// searchContext returns a context bounding a single search. A non-positive
-// timeout means no deadline.
-func searchContext(timeout time.Duration) (context.Context, context.CancelFunc) {
+// searchContext bounds a single search with the backend timeout, on top of
+// whatever deadline or cancellation the caller already imposes. A non-positive
+// timeout means no deadline of its own.
+func searchContext(parent context.Context, timeout time.Duration) (context.Context, context.CancelFunc) {
 	if timeout <= 0 {
-		return context.WithCancel(context.Background())
+		return context.WithCancel(parent)
 	}
-	return context.WithTimeout(context.Background(), timeout)
+	return context.WithTimeout(parent, timeout)
 }
 
 func BackendByType(t BackendType) Backend {

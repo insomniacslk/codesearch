@@ -1,6 +1,9 @@
 package codesearch
 
-import "testing"
+import (
+	"context"
+	"testing"
+)
 
 // TestBackendCapabilities pins which options each backend actually implements.
 // Both GitHub and GitLab used to accept -i and -F, store them in a field and
@@ -35,7 +38,7 @@ func TestBackendCapabilities(t *testing.T) {
 func TestCsearchConsumesSupportedCapabilities(t *testing.T) {
 	indexFile, _ := newTestIndex(t, map[string]string{"a.go": "NEEDLE in the haystack\n"})
 
-	sensitive, err := newCsearchBackend(t, indexFile).Search("needle")
+	sensitive, err := newCsearchBackend(t, indexFile).Search(context.Background(), "needle")
 	if err != nil {
 		t.Fatalf("search failed: %v", err)
 	}
@@ -43,7 +46,7 @@ func TestCsearchConsumesSupportedCapabilities(t *testing.T) {
 		t.Errorf("got %d results for a case-sensitive search, want 0", len(sensitive))
 	}
 
-	insensitive, err := newCsearchBackend(t, indexFile).Search("needle", WithCaseInsensitive(true))
+	insensitive, err := newCsearchBackend(t, indexFile).Search(context.Background(), "needle", WithCaseInsensitive(true))
 	if err != nil {
 		t.Fatalf("search failed: %v", err)
 	}

@@ -224,7 +224,7 @@ func TestGithubSearchPaginates(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	if _, err := newGithubBackend(t, srv.URL).Search("needle"); err != nil {
+	if _, err := newGithubBackend(t, srv.URL).Search(context.Background(), "needle"); err != nil {
 		t.Fatalf("search failed: %v", err)
 	}
 	if got, want := atomic.LoadInt32(&searches), int32(3); got != want {
@@ -250,7 +250,7 @@ func TestGithubSearchTerminatesWhenRateLimited(t *testing.T) {
 
 	done := make(chan error, 1)
 	go func() {
-		_, err := newGithubBackend(t, srv.URL).Search("needle")
+		_, err := newGithubBackend(t, srv.URL).Search(context.Background(), "needle")
 		done <- err
 	}()
 	select {
@@ -275,7 +275,7 @@ func TestGithubSearchHonoursTimeout(t *testing.T) {
 
 	g := newGithubBackend(t, srv.URL)
 	start := time.Now()
-	_, err := g.Search("needle", WithTimeout(100*time.Millisecond))
+	_, err := g.Search(context.Background(), "needle", WithTimeout(100*time.Millisecond))
 	if err == nil {
 		t.Fatal("got nil error, want a timeout")
 	}
@@ -338,7 +338,7 @@ func TestGithubSearchDecodesFileContent(t *testing.T) {
 		fileContents(base64File(file)))
 	defer srv.Close()
 
-	results, err := newGithubBackend(t, srv.URL).Search("needle")
+	results, err := newGithubBackend(t, srv.URL).Search(context.Background(), "needle")
 	if err != nil {
 		t.Fatalf("search failed: %v", err)
 	}
@@ -372,7 +372,7 @@ func TestGithubFileURLAnchorMatchesLineno(t *testing.T) {
 		fileContents(base64File(file)))
 	defer srv.Close()
 
-	results, err := newGithubBackend(t, srv.URL).Search("needle")
+	results, err := newGithubBackend(t, srv.URL).Search(context.Background(), "needle")
 	if err != nil {
 		t.Fatalf("search failed: %v", err)
 	}
@@ -394,7 +394,7 @@ func TestGithubSearchLargeFile(t *testing.T) {
 		fileContents(`{"type":"file","encoding":"none","name":"f.go","path":"src/f.go","size":2000000}`))
 	defer srv.Close()
 
-	_, err := newGithubBackend(t, srv.URL).Search("needle")
+	_, err := newGithubBackend(t, srv.URL).Search(context.Background(), "needle")
 	if err == nil {
 		t.Fatal("got nil error, want a failure for an unfetchable file")
 	}
@@ -410,7 +410,7 @@ func TestGithubSearchNullContent(t *testing.T) {
 		fileContents(`{"type":"file","encoding":"base64","name":"f.go","path":"src/f.go"}`))
 	defer srv.Close()
 
-	if _, err := newGithubBackend(t, srv.URL).Search("needle"); err == nil {
+	if _, err := newGithubBackend(t, srv.URL).Search(context.Background(), "needle"); err == nil {
 		t.Fatal("got nil error, want a failure for a file with no content")
 	}
 }
@@ -422,7 +422,7 @@ func TestGithubSearchDirectoryResponse(t *testing.T) {
 		fileContents(`[{"type":"file","name":"f.go","path":"src/f.go"}]`))
 	defer srv.Close()
 
-	_, err := newGithubBackend(t, srv.URL).Search("needle")
+	_, err := newGithubBackend(t, srv.URL).Search(context.Background(), "needle")
 	if err == nil {
 		t.Fatal("got nil error, want a failure when the path is a directory")
 	}
@@ -473,7 +473,7 @@ func TestGithubSearchSparseResult(t *testing.T) {
 			srv := githubServer(t, tt.item, fileContents(base64File("needle here\n")))
 			defer srv.Close()
 			// must not panic; an error is an acceptable outcome
-			if _, err := newGithubBackend(t, srv.URL).Search("needle"); err != nil {
+			if _, err := newGithubBackend(t, srv.URL).Search(context.Background(), "needle"); err != nil {
 				t.Logf("search returned error (acceptable): %v", err)
 			}
 		})
@@ -495,7 +495,7 @@ func TestGithubDebugLoggingDoesNotPanic(t *testing.T) {
 		fileContents(base64File("needle here\n")))
 	defer srv.Close()
 
-	if _, err := newGithubBackend(t, srv.URL).Search("needle"); err != nil {
+	if _, err := newGithubBackend(t, srv.URL).Search(context.Background(), "needle"); err != nil {
 		t.Logf("search returned error (acceptable): %v", err)
 	}
 }

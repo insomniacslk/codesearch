@@ -121,11 +121,11 @@ func removePathPrefix(s, prefix string) string {
 	return strings.TrimPrefix(strings.TrimPrefix(s, strings.TrimRight(prefix, "/")), "/")
 }
 
-func (g *Csearch) Search(searchString string, opts ...Opt) (Results, error) {
+func (g *Csearch) Search(ctx context.Context, searchString string, opts ...Opt) (Results, error) {
 	for _, opt := range opts {
 		opt(g)
 	}
-	ctx, cancel := searchContext(g.timeout)
+	ctx, cancel := searchContext(ctx, g.timeout)
 	defer cancel()
 
 	pattern := "(?m)" + searchString

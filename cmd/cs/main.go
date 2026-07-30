@@ -1,14 +1,17 @@
 package main
 
 import (
+	"context"
 	_ "embed"
 	"errors"
 	"fmt"
 	"io/fs"
 	"log"
 	"os"
+	"os/signal"
 	"sort"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/fatih/color"
@@ -256,7 +259,7 @@ type searchOutcome struct {
 // search is the slowest backend rather than the sum of all of them. Outcomes
 // are returned in the order the backends were given, not the order they
 // finished, so the output stays stable across runs.
-func runSearches(backends []codesearch.Backend, searchString string, opts ...codesearch.Opt) []searchOutcome {
+func runSearches(ctx context.Context, backends []codesearch.Backend, searchString string, opts ...codesearch.Opt) []searchOutcome {
 	type indexed struct {
 		idx     int
 		outcome searchOutcome
@@ -265,7 +268,7 @@ func runSearches(backends []codesearch.Backend, searchString string, opts ...cod
 	for idx, b := range backends {
 		go func(idx int, b codesearch.Backend) {
 			start := time.Now()
-			results, err := b.Search(searchString, opts...)
+			results, err := b.Search(ctx, searchString, opts...)
 			if err != nil {
 				logrus.Errorf("Backend %q failed: %v", b.Name(), err)
 			}
@@ -441,8 +444,13 @@ var searchCmd = &cobra.Command{
 			fmt.Fprintf(os.Stderr, "Requested options are not supported:\n%v\n", err)
 			os.Exit(1)
 		}
+		// a cancelled run must abandon in-flight requests rather than wait
+		// for them, so Ctrl-C is honoured mid-search
+		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+		defer stop()
+
 		searchStart := time.Now()
-		outcomes := runSearches(backends, searchString,
+		outcomes := runSearches(ctx, backends, searchString,
 			codesearch.WithLinesBefore(flagSearchContextBefore),
 			codesearch.WithLinesAfter(flagSearchContextAfter),
 			codesearch.WithCaseInsensitive(flagCaseInsensitive),

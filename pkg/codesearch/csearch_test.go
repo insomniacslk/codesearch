@@ -1,12 +1,15 @@
 package codesearch
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"sort"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/google/codesearch/index"
 )
@@ -226,7 +229,7 @@ func TestCsearchSearchInFilenames(t *testing.T) {
 		{"no match", "nosuchfile", nil},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
-			results, err := newCsearchBackend(t, indexFile).Search(tt.pattern, WithSearchInFilenames(true))
+			results, err := newCsearchBackend(t, indexFile).Search(context.Background(), tt.pattern, WithSearchInFilenames(true))
 			if err != nil {
 				t.Fatalf("search failed: %v", err)
 			}
@@ -241,7 +244,7 @@ func TestCsearchSearchInFilenames(t *testing.T) {
 // a directory name does not report the directory itself as a hit.
 func TestCsearchSearchInFilenamesSkipsDirectories(t *testing.T) {
 	indexFile, _ := newTestIndex(t, filenameTree)
-	results, err := newCsearchBackend(t, indexFile).Search("thing", WithSearchInFilenames(true))
+	results, err := newCsearchBackend(t, indexFile).Search(context.Background(), "thing", WithSearchInFilenames(true))
 	if err != nil {
 		t.Fatalf("search failed: %v", err)
 	}
@@ -270,7 +273,7 @@ func TestCsearchSearchInFilenamesUnreadableDir(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = os.Chmod(locked, 0o755) })
 
-	results, err := newCsearchBackend(t, indexFile).Search("main.go", WithSearchInFilenames(true))
+	results, err := newCsearchBackend(t, indexFile).Search(context.Background(), "main.go", WithSearchInFilenames(true))
 	if err != nil {
 		t.Fatalf("search failed: %v", err)
 	}
@@ -331,5 +334,35 @@ func TestRemovePathPrefixRespectsComponents(t *testing.T) {
 		if got := removePathPrefix(tt.s, tt.prefix); got != tt.want {
 			t.Errorf("removePathPrefix(%q, %q) = %q, want %q", tt.s, tt.prefix, got, tt.want)
 		}
+	}
+}
+
+// TestCsearchHonoursCancellation checks that a local search stops when the
+// caller cancels, rather than grinding through every file in the index.
+func TestCsearchHonoursCancellation(t *testing.T) {
+	files := make(map[string]string, 200)
+	for i := 0; i < 200; i++ {
+		files[fmt.Sprintf("f%03d.go", i)] = "package main\n// needle\n"
+	}
+	indexFile, _ := newTestIndex(t, files)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	_, err := newCsearchBackend(t, indexFile).Search(ctx, "needle")
+	if !errors.Is(err, context.Canceled) {
+		t.Errorf("got error %v, want context.Canceled", err)
+	}
+}
+
+func TestCsearchHonoursTimeout(t *testing.T) {
+	indexFile, _ := newTestIndex(t, map[string]string{"a.go": "needle\n"})
+	ctx, cancel := context.WithTimeout(context.Background(), time.Nanosecond)
+	defer cancel()
+	time.Sleep(time.Millisecond)
+
+	_, err := newCsearchBackend(t, indexFile).Search(ctx, "needle")
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Errorf("got error %v, want context.DeadlineExceeded", err)
 	}
 }
