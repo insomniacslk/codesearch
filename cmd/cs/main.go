@@ -40,6 +40,7 @@ var (
 	flagMatchFilename       string
 	flagSearchContextBefore int
 	flagSearchContextAfter  int
+	flagSearchContext       int
 	flagCaseInsensitive     bool
 	flagLimit               uint
 	flagSort                string
@@ -71,6 +72,7 @@ func init() {
 	searchCmd.PersistentFlags().StringVarP(&flagMatchFilename, "match-filename", "f", "", "Show results only from files whose path matches this regexp. Unanchored and case-insensitive, so \".go\" matches anywhere in the path and \"\\.go$\" only at the end")
 	searchCmd.PersistentFlags().IntVarP(&flagSearchContextBefore, "before", "B", 0, "Number of context lines to show before the result")
 	searchCmd.PersistentFlags().IntVarP(&flagSearchContextAfter, "after", "A", 0, "Number of context lines to show after the result")
+	searchCmd.PersistentFlags().IntVarP(&flagSearchContext, "context", "C", 0, "Number of context lines to show on both sides of the result. A non-zero --before or --after takes precedence over it")
 	searchCmd.PersistentFlags().BoolVarP(&flagCaseInsensitive, "case-insensitive", "i", false, "Case-insensitive search")
 	searchCmd.PersistentFlags().UintVarP(&flagLimit, "limit", "l", 0, "Limit the amount of results that are printed per backend. 0 means no limit")
 	searchCmd.PersistentFlags().StringVarP(&flagSort, "sort", "s", "", "Sort the results. Possible values: \"a-z\", \"z-a\"")
@@ -96,6 +98,7 @@ var flagToConfigKey = map[string]string{
 	"sort":                "defaults.sort",
 	"before":              "defaults.before",
 	"after":               "defaults.after",
+	"context":             "defaults.context",
 	"case-insensitive":    "defaults.case_insensitive",
 	"search-in-filenames": "defaults.search_in_filenames",
 	"match-filename":      "defaults.match_filename",
@@ -128,6 +131,15 @@ func resolveFlags() {
 	flagSort = viper.GetString("defaults.sort")
 	flagSearchContextBefore = viper.GetInt("defaults.before")
 	flagSearchContextAfter = viper.GetInt("defaults.after")
+	// -C supplies both sides; a side that was asked for explicitly wins
+	if flagSearchContext = viper.GetInt("defaults.context"); flagSearchContext > 0 {
+		if flagSearchContextBefore == 0 {
+			flagSearchContextBefore = flagSearchContext
+		}
+		if flagSearchContextAfter == 0 {
+			flagSearchContextAfter = flagSearchContext
+		}
+	}
 	flagCaseInsensitive = viper.GetBool("defaults.case_insensitive")
 	flagSearchInFilenames = viper.GetBool("defaults.search_in_filenames")
 	flagMatchFilename = viper.GetString("defaults.match_filename")

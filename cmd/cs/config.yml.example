@@ -18,9 +18,11 @@ defaults:
   # as --sort.
   sort: ""
   # Number of context lines shown before and after each result. Same as
-  # --before and --after.
+  # --before and --after. `context` sets both at once, like --context, and a
+  # non-zero `before` or `after` takes precedence over it.
   before: 0
   after: 0
+  context: 0
   # Same as --case-insensitive, --search-in-filenames and --match-filename.
   case_insensitive: false
   search_in_filenames: false

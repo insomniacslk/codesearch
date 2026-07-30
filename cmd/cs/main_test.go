@@ -34,6 +34,7 @@ func resetConfigState(t *testing.T) {
 	flagSort = ""
 	flagSearchContextBefore = 0
 	flagSearchContextAfter = 0
+	flagSearchContext = 0
 	flagCaseInsensitive = false
 	flagSearchInFilenames = false
 	flagMatchFilename = ""
@@ -871,5 +872,68 @@ func TestCompileFilenamePatternEmptyIsNil(t *testing.T) {
 	}
 	if re != nil {
 		t.Errorf("got %v, want nil for an empty pattern", re)
+	}
+}
+
+func TestContextFlag(t *testing.T) {
+	for _, tt := range []struct {
+		name                  string
+		config                string
+		flags                 map[string]string
+		wantBefore, wantAfter int
+	}{
+		{
+			name:       "context sets both sides",
+			flags:      map[string]string{"context": "3"},
+			wantBefore: 3, wantAfter: 3,
+		},
+		{
+			name:       "explicit before wins",
+			flags:      map[string]string{"context": "3", "before": "1"},
+			wantBefore: 1, wantAfter: 3,
+		},
+		{
+			name:       "explicit after wins",
+			flags:      map[string]string{"context": "3", "after": "5"},
+			wantBefore: 3, wantAfter: 5,
+		},
+		{
+			name:       "both explicit",
+			flags:      map[string]string{"context": "3", "before": "1", "after": "2"},
+			wantBefore: 1, wantAfter: 2,
+		},
+		{
+			name:       "no context flag leaves the sides alone",
+			flags:      map[string]string{"before": "2"},
+			wantBefore: 2, wantAfter: 0,
+		},
+		{
+			name:       "context from the config file",
+			config:     "defaults:\n  context: 4\n",
+			wantBefore: 4, wantAfter: 4,
+		},
+		{
+			name:       "command line context overrides the config file",
+			config:     "defaults:\n  context: 4\n",
+			flags:      map[string]string{"context": "1"},
+			wantBefore: 1, wantAfter: 1,
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			resetConfigState(t)
+			configFile = writeConfig(t, testConfig+tt.config)
+			for name, value := range tt.flags {
+				setFlag(t, name, value)
+			}
+
+			initConfig()
+
+			if flagSearchContextBefore != tt.wantBefore {
+				t.Errorf("before: got %d, want %d", flagSearchContextBefore, tt.wantBefore)
+			}
+			if flagSearchContextAfter != tt.wantAfter {
+				t.Errorf("after: got %d, want %d", flagSearchContextAfter, tt.wantAfter)
+			}
+		})
 	}
 }
