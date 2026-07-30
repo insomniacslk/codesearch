@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	goregexp "regexp"
@@ -111,6 +112,29 @@ func removePathPrefix(s, prefix string) string {
 	return strings.TrimPrefix(strings.TrimPrefix(s, strings.TrimRight(prefix, "/")), "/")
 }
 
+// indexMagic is the header cindex writes at the start of an index file.
+const indexMagic = "csearch index 1\n"
+
+// openIndex validates the index before handing it to index.Open, which calls
+// log.Fatal on anything it does not like and so would take the whole process
+// down with "corrupt index" even when the file is simply not there.
+func openIndex(path string) (*index.Index, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil, fmt.Errorf("index %q does not exist, create it with cindex", path)
+		}
+		return nil, fmt.Errorf("cannot read index %q: %w", path, err)
+	}
+	defer f.Close()
+
+	header := make([]byte, len(indexMagic))
+	if _, err := io.ReadFull(f, header); err != nil || string(header) != indexMagic {
+		return nil, fmt.Errorf("%q is not a codesearch index, recreate it with cindex", path)
+	}
+	return index.Open(path), nil
+}
+
 func (g *Csearch) Search(ctx context.Context, searchString string, opts SearchOptions) (Results, error) {
 	ctx, cancel := searchContext(ctx, opts.Timeout)
 	defer cancel()
@@ -119,7 +143,10 @@ func (g *Csearch) Search(ctx context.Context, searchString string, opts SearchOp
 	if opts.CaseInsensitive {
 		pattern = "(?i)" + pattern
 	}
-	ix := index.Open(g.indexFile)
+	ix, err := openIndex(g.indexFile)
+	if err != nil {
+		return nil, err
+	}
 	if opts.SearchInFilenames {
 		// get all the file names instead of doing a search on the cindex
 		logrus.Debugf("Searching in file names")

@@ -418,3 +418,76 @@ func TestCsearchExpandsIndexPath(t *testing.T) {
 		t.Errorf("got %q, want %q", got, want)
 	}
 }
+
+// TestCsearchMissingIndex covers index.Open calling log.Fatal internally: a
+// missing or malformed index used to abort the process with "corrupt index:
+// remove ..." instead of returning an error the caller could report.
+func TestCsearchMissingIndex(t *testing.T) {
+	for _, tt := range []struct {
+		name    string
+		setup   func(t *testing.T) string
+		wantMsg string
+	}{
+		{
+			name: "does not exist",
+			setup: func(t *testing.T) string {
+				return filepath.Join(t.TempDir(), "nonexistent")
+			},
+			wantMsg: "does not exist",
+		},
+		{
+			name: "empty file",
+			setup: func(t *testing.T) string {
+				p := filepath.Join(t.TempDir(), "empty")
+				if err := os.WriteFile(p, nil, 0o644); err != nil {
+					t.Fatalf("failed to write: %v", err)
+				}
+				return p
+			},
+			wantMsg: "not a codesearch index",
+		},
+		{
+			name: "not an index",
+			setup: func(t *testing.T) string {
+				p := filepath.Join(t.TempDir(), "junk")
+				if err := os.WriteFile(p, []byte("this is not an index at all"), 0o644); err != nil {
+					t.Fatalf("failed to write: %v", err)
+				}
+				return p
+			},
+			wantMsg: "not a codesearch index",
+		},
+		{
+			name:    "is a directory",
+			setup:   func(t *testing.T) string { return t.TempDir() },
+			wantMsg: "not a codesearch index",
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			path := tt.setup(t)
+			_, err := newCsearchBackend(t, path).Search(context.Background(), "needle", SearchOptions{})
+			if err == nil {
+				t.Fatal("got nil error, want a failure")
+			}
+			if !strings.Contains(err.Error(), tt.wantMsg) {
+				t.Errorf("got error %q, want it to mention %q", err, tt.wantMsg)
+			}
+			if !strings.Contains(err.Error(), filepath.Base(path)) {
+				t.Errorf("error %q does not name the index", err)
+			}
+		})
+	}
+}
+
+// TestCsearchValidIndexStillOpens makes sure the check does not reject a real
+// index built by the index package.
+func TestCsearchValidIndexStillOpens(t *testing.T) {
+	indexFile, _ := newTestIndex(t, map[string]string{"a.go": "needle here\n"})
+	results, err := newCsearchBackend(t, indexFile).Search(context.Background(), "needle", SearchOptions{})
+	if err != nil {
+		t.Fatalf("search failed: %v", err)
+	}
+	if len(results) != 1 {
+		t.Errorf("got %d results, want 1", len(results))
+	}
+}
