@@ -3,6 +3,7 @@ package main
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/insomniacslk/codesearch/pkg/codesearch"
@@ -193,4 +194,128 @@ func TestBindFlagsCoversEveryKey(t *testing.T) {
 			t.Errorf("flag %q in flagToConfigKey does not exist", name)
 		}
 	}
+}
+
+func contentResult(path string, lineno int) codesearch.Result {
+	return codesearch.Result{Backend: "b", Path: path, Line: "needle", Lineno: lineno, Highlight: [2]int{0, 6}}
+}
+
+// TestSelectResultsLimitCountsPrinted covers the regression where the limit
+// was compared against the raw index, so results discarded by the file name
+// filter still consumed the budget.
+func TestSelectResultsLimitCountsPrinted(t *testing.T) {
+	results := codesearch.Results{
+		contentResult("a/skip.js", 1),
+		contentResult("b/skip.js", 2),
+		contentResult("c/skip.js", 3),
+		contentResult("d/want.go", 4),
+		contentResult("e/want.go", 5),
+		contentResult("f/want.go", 6),
+	}
+	got := selectResults(results, 2, ".go")
+	if len(got) != 2 {
+		t.Fatalf("got %d results, want 2", len(got))
+	}
+	for _, r := range got {
+		if !strings.HasSuffix(r.Path, ".go") {
+			t.Errorf("got %q, want only .go paths", r.Path)
+		}
+	}
+	if got[0].Path != "d/want.go" || got[1].Path != "e/want.go" {
+		t.Errorf("got %q and %q, want d/want.go and e/want.go", got[0].Path, got[1].Path)
+	}
+}
+
+func TestSelectResults(t *testing.T) {
+	results := codesearch.Results{
+		contentResult("one.go", 1),
+		contentResult("two.js", 2),
+		contentResult("three.go", 3),
+	}
+	results = append(results, codesearch.Result{Path: "filename-only.go", IsFilename: true})
+
+	for _, tt := range []struct {
+		name          string
+		limit         uint
+		matchFilename string
+		want          []string
+	}{
+		{"no limit no filter", 0, "", []string{"one.go", "two.js", "three.go"}},
+		{"limit only", 2, "", []string{"one.go", "two.js"}},
+		{"filter only", 0, ".go", []string{"one.go", "three.go"}},
+		{"limit above available", 99, "", []string{"one.go", "two.js", "three.go"}},
+		{"filter matches nothing", 0, ".rb", nil},
+		{"filter is case insensitive", 0, ".GO", []string{"one.go", "three.go"}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			var got []string
+			for _, r := range selectResults(results, tt.limit, tt.matchFilename) {
+				got = append(got, r.Path)
+			}
+			if !equalStrings(got, tt.want) {
+				t.Errorf("got %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+// TestSelectResultsSkipsFilenameOnlyMatches checks that results flagged as
+// file name matches never appear in content output, where they would have no
+// line to highlight.
+func TestSelectResultsSkipsFilenameOnlyMatches(t *testing.T) {
+	results := codesearch.Results{
+		{Path: "a.go", IsFilename: true},
+		{Path: "b.go", IsFilename: true},
+	}
+	if got := selectResults(results, 0, ""); len(got) != 0 {
+		t.Errorf("got %d results, want 0", len(got))
+	}
+}
+
+func TestSelectFilenames(t *testing.T) {
+	results := codesearch.Results{
+		{Path: "cmd/main.go"},
+		{Path: "cmd/main.go"},
+		{Path: "pkg/main.go"},
+		{Path: "README.md"},
+	}
+	t.Run("deduplicates and sorts", func(t *testing.T) {
+		var got []string
+		for _, r := range selectFilenames(results, 0, "main.go") {
+			got = append(got, r.Path)
+		}
+		if want := []string{"cmd/main.go", "pkg/main.go"}; !equalStrings(got, want) {
+			t.Errorf("got %q, want %q", got, want)
+		}
+	})
+	t.Run("limit counts unique names", func(t *testing.T) {
+		got := selectFilenames(results, 1, "main.go")
+		if len(got) != 1 {
+			t.Fatalf("got %d results, want 1", len(got))
+		}
+		if got[0].Path != "cmd/main.go" {
+			t.Errorf("got %q, want cmd/main.go", got[0].Path)
+		}
+	})
+	t.Run("duplicates do not consume the limit", func(t *testing.T) {
+		dupes := codesearch.Results{
+			{Path: "same.go"}, {Path: "same.go"}, {Path: "same.go"}, {Path: "other.go"},
+		}
+		got := selectFilenames(dupes, 2, ".go")
+		if len(got) != 2 {
+			t.Fatalf("got %d results, want 2", len(got))
+		}
+	})
+}
+
+func equalStrings(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
 }

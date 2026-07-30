@@ -220,6 +220,50 @@ func repoNameFromRes(res *codesearch.Result) string {
 	return repoName
 }
 
+// selectResults picks the content matches to print, applying the file name
+// filter first so that the limit counts results that are actually shown
+// rather than results merely examined.
+func selectResults(results codesearch.Results, limit uint, matchFilename string) []*codesearch.Result {
+	var out []*codesearch.Result
+	for i := range results {
+		res := &results[i]
+		if res.IsFilename {
+			continue
+		}
+		if matchFilename != "" && !strings.Contains(strings.ToLower(res.Path), strings.ToLower(matchFilename)) {
+			continue
+		}
+		if limit > 0 && uint(len(out)) >= limit {
+			break
+		}
+		out = append(out, res)
+	}
+	return out
+}
+
+// selectFilenames picks the unique file names to print for a -F search. The
+// limit counts distinct file names, since that is what gets printed.
+func selectFilenames(results codesearch.Results, limit uint, searchString string) []*codesearch.Result {
+	seen := make(map[string]struct{}, len(results))
+	var out []*codesearch.Result
+	for i := range results {
+		res := &results[i]
+		if !strings.Contains(strings.ToLower(res.Path), strings.ToLower(searchString)) {
+			continue
+		}
+		if _, ok := seen[res.Path]; ok {
+			continue
+		}
+		if limit > 0 && uint(len(out)) >= limit {
+			break
+		}
+		seen[res.Path] = struct{}{}
+		out = append(out, res)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Path < out[j].Path })
+	return out
+}
+
 var searchCmd = &cobra.Command{
 	Use:   "search",
 	Short: "Search code in the specified backends",
@@ -306,23 +350,22 @@ var searchCmd = &cobra.Command{
 			}
 			// sort the results, if requested
 			results = sorter(results)
-			numResults := 0
-			fileNamesMap := make(map[string]*codesearch.Result)
-			for idx, res := range results {
-				repoName := repoNameFromRes(&res)
-				if flagLimit > 0 && uint(idx) >= flagLimit {
-					break
+			var numResults int
+			if flagSearchInFilenames {
+				selected := selectFilenames(results, flagLimit, searchString)
+				for _, res := range selected {
+					fmt.Printf(
+						"%s:%s:%s (%s)\n\n",
+						b.Name(),
+						textBold.Sprint(toAnsiURL(res.RepoURL, repoNameFromRes(res))),
+						textBold.Sprint(toAnsiURL(res.FileURL, res.Path)),
+						textBold.Sprint(res.Branch),
+					)
 				}
-				if flagSearchInFilenames {
-					// we are searching the pattern in the file name. Collect
-					// all of the first in a map to remove duplicates, then
-					// print them out later in this function
-					if strings.Contains(strings.ToLower(res.Path), strings.ToLower(searchString)) {
-						fileNamesMap[res.Path] = &res
-					}
-				} else {
-					// we are searching the pattern in the file content
-					// get context lines
+				numResults = len(selected)
+			} else {
+				selected := selectResults(results, flagLimit, flagMatchFilename)
+				for _, res := range selected {
 					var before, after string
 					for idx, line := range res.Context.Before {
 						before += fmt.Sprintf("%d: %s\n", res.Lineno-(len(res.Context.Before)-idx), line)
@@ -333,68 +376,20 @@ var searchCmd = &cobra.Command{
 					if len(res.Context.After) > 0 {
 						after = "\n" + after
 					}
-					// get start and end of highlight
 					start, end := res.Highlight[0], res.Highlight[1]
-					if flagMatchFilename != "" {
-						if strings.Contains(strings.ToLower(res.Path), strings.ToLower(flagMatchFilename)) {
-							// only show the result if the file name matches the
-							// file pattern
-							if !res.IsFilename {
-								fmt.Printf(
-									"%s:%s:%s (%s)\n\n%s%s: %s%s\n\n",
-									res.Backend,
-									textBold.Sprint(toAnsiURL(res.RepoURL, repoName)),
-									textBold.Sprint(toAnsiURL(res.FileURL, res.Path)),
-									textBold.Sprint(res.Branch),
-									before,
-									textBoldGreen.Sprint(res.Lineno),
-									res.Line[:start]+textBoldRed.Sprint(res.Line[start:end])+res.Line[end:],
-									after,
-								)
-								numResults++
-							}
-						}
-					} else {
-						// no file name pattern specified, so show all the
-						// results
-						if res.IsFilename {
-							continue
-						}
-						fmt.Printf(
-							"%s:%s:%s (%s)\n\n%s%s: %s%s\n\n",
-							res.Backend,
-							textBold.Sprint(toAnsiURL(res.RepoURL, repoName)),
-							textBold.Sprint(toAnsiURL(res.FileURL, res.Path)),
-							textBold.Sprint(res.Branch),
-							before,
-							textBoldGreen.Sprint(res.Lineno),
-							res.Line[:start]+textBoldRed.Sprint(res.Line[start:end])+res.Line[end:],
-							after,
-						)
-						numResults++
-					}
-				}
-			}
-			if flagSearchInFilenames {
-				// and now print the unique file names, if flagSearchInFilenames was
-				// requested
-				fileNames := make([]string, 0, len(fileNamesMap))
-				for name := range fileNamesMap {
-					fileNames = append(fileNames, name)
-				}
-				sort.Strings(fileNames)
-				for _, name := range fileNames {
-					res := fileNamesMap[name]
-					repoName := repoNameFromRes(res)
 					fmt.Printf(
-						"%s:%s:%s (%s)\n\n",
-						b.Name(),
-						textBold.Sprint(toAnsiURL(res.RepoURL, repoName)),
+						"%s:%s:%s (%s)\n\n%s%s: %s%s\n\n",
+						res.Backend,
+						textBold.Sprint(toAnsiURL(res.RepoURL, repoNameFromRes(res))),
 						textBold.Sprint(toAnsiURL(res.FileURL, res.Path)),
 						textBold.Sprint(res.Branch),
+						before,
+						textBoldGreen.Sprint(res.Lineno),
+						res.Line[:start]+textBoldRed.Sprint(res.Line[start:end])+res.Line[end:],
+						after,
 					)
 				}
-				numResults = len(fileNames)
+				numResults = len(selected)
 			}
 			st.results = numResults
 			stats = append(stats, st)
