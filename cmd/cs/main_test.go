@@ -2,6 +2,7 @@ package main
 
 import (
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -560,5 +561,76 @@ func TestSplitHighlight(t *testing.T) {
 				t.Errorf("pieces rejoin to %q, want %q", got, tt.line)
 			}
 		})
+	}
+}
+
+// TestRunSearchesIsConcurrent checks that backends are queried in parallel:
+// run sequentially, four 100ms backends would take at least 400ms.
+func TestRunSearchesIsConcurrent(t *testing.T) {
+	const (
+		delay = 100 * time.Millisecond
+		n     = 4
+	)
+	backends := make([]codesearch.Backend, 0, n)
+	for i := 0; i < n; i++ {
+		backends = append(backends, &fakeBackend{name: fmt.Sprintf("b%d", i), delay: delay})
+	}
+
+	start := time.Now()
+	outcomes := runSearches(backends, "needle")
+	elapsed := time.Since(start)
+
+	if len(outcomes) != n {
+		t.Fatalf("got %d outcomes, want %d", len(outcomes), n)
+	}
+	if elapsed >= n*delay {
+		t.Errorf("took %s for %d backends of %s each, want them to overlap", elapsed, n, delay)
+	}
+}
+
+// TestRunSearchesPreservesOrder checks that results come back in the order the
+// backends were configured, regardless of which one finishes first.
+func TestRunSearchesPreservesOrder(t *testing.T) {
+	backends := []codesearch.Backend{
+		&fakeBackend{name: "slowest", delay: 60 * time.Millisecond, results: codesearch.Results{{Path: "a"}}},
+		&fakeBackend{name: "middle", delay: 30 * time.Millisecond, results: codesearch.Results{{Path: "b"}}},
+		&fakeBackend{name: "fastest", results: codesearch.Results{{Path: "c"}}},
+	}
+
+	for i := 0; i < 5; i++ {
+		outcomes := runSearches(backends, "needle")
+		var got []string
+		for _, o := range outcomes {
+			got = append(got, o.backend.Name())
+		}
+		if want := []string{"slowest", "middle", "fastest"}; !equalStrings(got, want) {
+			t.Fatalf("run %d: got %q, want %q", i, got, want)
+		}
+		if outcomes[0].results[0].Path != "a" || outcomes[2].results[0].Path != "c" {
+			t.Fatalf("run %d: results paired with the wrong backend", i)
+		}
+	}
+}
+
+// TestRunSearchesConcurrentFailures checks that a failing backend does not
+// disturb the others now that they run at the same time.
+func TestRunSearchesConcurrentFailures(t *testing.T) {
+	backends := []codesearch.Backend{
+		&fakeBackend{name: "ok1", delay: 20 * time.Millisecond, results: codesearch.Results{{Path: "a"}}},
+		&fakeBackend{name: "bad", err: errors.New("boom")},
+		&fakeBackend{name: "ok2", delay: 10 * time.Millisecond, results: codesearch.Results{{Path: "b"}}},
+	}
+	outcomes := runSearches(backends, "needle")
+
+	if got := failedSearches(outcomes); len(got) != 1 {
+		t.Fatalf("got %d failures, want 1", len(got))
+	}
+	for _, i := range []int{0, 2} {
+		if outcomes[i].err != nil {
+			t.Errorf("outcome %d: got error %v, want nil", i, outcomes[i].err)
+		}
+		if len(outcomes[i].results) != 1 {
+			t.Errorf("outcome %d: got %d results, want 1", i, len(outcomes[i].results))
+		}
 	}
 }

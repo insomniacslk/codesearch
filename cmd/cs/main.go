@@ -252,20 +252,35 @@ type searchOutcome struct {
 	err      error
 }
 
+// runSearches queries every backend concurrently, so the wall clock cost of a
+// search is the slowest backend rather than the sum of all of them. Outcomes
+// are returned in the order the backends were given, not the order they
+// finished, so the output stays stable across runs.
 func runSearches(backends []codesearch.Backend, searchString string, opts ...codesearch.Opt) []searchOutcome {
-	outcomes := make([]searchOutcome, 0, len(backends))
-	for _, b := range backends {
-		start := time.Now()
-		results, err := b.Search(searchString, opts...)
-		if err != nil {
-			logrus.Errorf("Backend %q failed: %v", b.Name(), err)
-		}
-		outcomes = append(outcomes, searchOutcome{
-			backend:  b,
-			results:  results,
-			duration: time.Since(start),
-			err:      err,
-		})
+	type indexed struct {
+		idx     int
+		outcome searchOutcome
+	}
+	ch := make(chan indexed, len(backends))
+	for idx, b := range backends {
+		go func(idx int, b codesearch.Backend) {
+			start := time.Now()
+			results, err := b.Search(searchString, opts...)
+			if err != nil {
+				logrus.Errorf("Backend %q failed: %v", b.Name(), err)
+			}
+			ch <- indexed{idx, searchOutcome{
+				backend:  b,
+				results:  results,
+				duration: time.Since(start),
+				err:      err,
+			}}
+		}(idx, b)
+	}
+	outcomes := make([]searchOutcome, len(backends))
+	for range backends {
+		r := <-ch
+		outcomes[r.idx] = r.outcome
 	}
 	return outcomes
 }
