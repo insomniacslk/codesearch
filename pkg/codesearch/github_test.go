@@ -25,6 +25,10 @@ func rateLimitError(reset time.Time) error {
 	}
 }
 
+func secondaryLimitError(after time.Duration) error {
+	return &github.AbuseRateLimitError{RetryAfter: &after, Message: "secondary rate limit"}
+}
+
 func TestRetrySucceedsOnFirstAttempt(t *testing.T) {
 	calls := 0
 	err := retry(context.Background(), func() error {
@@ -56,14 +60,14 @@ func TestRetryDoesNotRetryOtherErrors(t *testing.T) {
 
 // TestRetryGivesUpAfterMaxAttempts is the regression test for the infinite
 // loop: the old code drove pagination from the retry counter, so a search that
-// stayed rate limited restarted the inner loop forever and never returned.
+// stayed throttled restarted the inner loop forever and never returned.
 func TestRetryGivesUpAfterMaxAttempts(t *testing.T) {
 	calls := 0
 	done := make(chan error, 1)
 	go func() {
 		done <- retry(context.Background(), func() error {
 			calls++
-			return rateLimitError(time.Now().Add(-time.Hour))
+			return secondaryLimitError(0)
 		})
 	}()
 	select {
@@ -71,9 +75,9 @@ func TestRetryGivesUpAfterMaxAttempts(t *testing.T) {
 		if err == nil {
 			t.Fatal("got nil error, want failure after exhausting attempts")
 		}
-		var rlErr *github.RateLimitError
-		if !errors.As(err, &rlErr) {
-			t.Errorf("got error %v, want it to wrap a RateLimitError", err)
+		var abuseErr *github.AbuseRateLimitError
+		if !errors.As(err, &abuseErr) {
+			t.Errorf("got error %v, want it to wrap an AbuseRateLimitError", err)
 		}
 	case <-time.After(10 * time.Second):
 		t.Fatal("retry did not terminate")
@@ -83,12 +87,41 @@ func TestRetryGivesUpAfterMaxAttempts(t *testing.T) {
 	}
 }
 
-func TestRetryRecoversAfterRateLimit(t *testing.T) {
+// TestRetryDoesNotRetryPrimaryRateLimits: a primary limit means the quota for
+// the whole window is spent, so retrying inside one command can only hang and
+// then spend the fresh quota on the query that exhausted it.
+func TestRetryDoesNotRetryPrimaryRateLimits(t *testing.T) {
+	for _, reset := range []time.Time{
+		time.Now().Add(-time.Hour),
+		time.Now().Add(30 * time.Second),
+		time.Now().Add(time.Hour),
+	} {
+		calls := 0
+		start := time.Now()
+		err := retry(context.Background(), func() error {
+			calls++
+			return rateLimitError(reset)
+		})
+		var rlErr *github.RateLimitError
+		if !errors.As(err, &rlErr) {
+			t.Errorf("reset %v: got error %v, want a RateLimitError", reset, err)
+		}
+		if calls != 1 {
+			t.Errorf("reset %v: got %d calls, want 1", reset, calls)
+		}
+		// it must come back at once rather than sitting out the window
+		if elapsed := time.Since(start); elapsed > time.Second {
+			t.Errorf("reset %v: took %s, want an immediate failure", reset, elapsed)
+		}
+	}
+}
+
+func TestRetryRecoversAfterSecondaryLimit(t *testing.T) {
 	calls := 0
 	err := retry(context.Background(), func() error {
 		calls++
 		if calls < maxAttempts {
-			return rateLimitError(time.Now().Add(-time.Hour))
+			return secondaryLimitError(0)
 		}
 		return nil
 	})
@@ -121,7 +154,7 @@ func TestRetryStopsWhenContextExpiresDuringBackoff(t *testing.T) {
 	defer cancel()
 	start := time.Now()
 	err := retry(ctx, func() error {
-		return rateLimitError(time.Now().Add(time.Hour))
+		return secondaryLimitError(time.Hour)
 	})
 	if !errors.Is(err, context.DeadlineExceeded) {
 		t.Errorf("got error %v, want context.DeadlineExceeded", err)
@@ -131,38 +164,23 @@ func TestRetryStopsWhenContextExpiresDuringBackoff(t *testing.T) {
 	}
 }
 
-// TestRateLimitDelayIsNeverNegative covers the busy loop: once the reset time
-// has passed, time.Until returns a negative duration, which time.Sleep treats
-// as no wait at all, so the old code hammered the API as fast as it could.
-func TestRateLimitDelayIsNeverNegative(t *testing.T) {
+func TestRetryDelayPrimaryLimitIsNotRetryable(t *testing.T) {
 	for _, reset := range []time.Time{
 		time.Now().Add(-time.Hour),
 		time.Now().Add(-time.Second),
+		time.Now().Add(time.Minute),
+		time.Now().Add(time.Hour),
 		{},
 	} {
-		delay, retryable := rateLimitDelay(rateLimitError(reset))
-		if !retryable {
-			t.Errorf("reset %v: got retryable false, want true", reset)
-		}
-		if delay < 0 {
-			t.Errorf("reset %v: got delay %s, want >= 0", reset, delay)
+		if _, retryable := retryDelay(rateLimitError(reset)); retryable {
+			t.Errorf("reset %v: got retryable true, want false", reset)
 		}
 	}
 }
 
-func TestRateLimitDelayFuture(t *testing.T) {
-	delay, retryable := rateLimitDelay(rateLimitError(time.Now().Add(time.Minute)))
-	if !retryable {
-		t.Fatal("got retryable false, want true")
-	}
-	if delay <= 0 || delay > time.Minute {
-		t.Errorf("got delay %s, want between 0 and 1m", delay)
-	}
-}
-
-func TestRateLimitDelaySecondaryLimit(t *testing.T) {
+func TestRetryDelaySecondaryLimit(t *testing.T) {
 	after := 3 * time.Second
-	delay, retryable := rateLimitDelay(&github.AbuseRateLimitError{RetryAfter: &after})
+	delay, retryable := retryDelay(secondaryLimitError(after))
 	if !retryable {
 		t.Fatal("got retryable false, want true")
 	}
@@ -170,13 +188,22 @@ func TestRateLimitDelaySecondaryLimit(t *testing.T) {
 		t.Errorf("got delay %s, want %s", delay, after)
 	}
 
-	negative := -time.Second
-	delay, retryable = rateLimitDelay(&github.AbuseRateLimitError{RetryAfter: &negative})
+	// a negative Retry-After must not become a negative sleep
+	delay, retryable = retryDelay(secondaryLimitError(-time.Second))
 	if !retryable || delay < 0 {
 		t.Errorf("got delay %s retryable %v, want >= 0 and true", delay, retryable)
 	}
 
-	if _, retryable := rateLimitDelay(errors.New("boom")); retryable {
+	// no Retry-After at all: GitHub asks for at least a minute
+	delay, retryable = retryDelay(&github.AbuseRateLimitError{Message: "secondary"})
+	if !retryable {
+		t.Fatal("got retryable false, want true")
+	}
+	if delay != defaultSecondaryRateLimitDelay {
+		t.Errorf("got delay %s, want %s", delay, defaultSecondaryRateLimitDelay)
+	}
+
+	if _, retryable := retryDelay(errors.New("boom")); retryable {
 		t.Error("got retryable true for a plain error, want false")
 	}
 }
@@ -235,7 +262,8 @@ func TestGithubSearchPaginates(t *testing.T) {
 
 // TestGithubSearchTerminatesWhenRateLimited is the end-to-end version of the
 // infinite loop: a server that is always rate limited must produce an error
-// rather than spinning.
+// rather than spinning, and must do it on the first response rather than
+// spending two more requests of an already exhausted quota.
 func TestGithubSearchTerminatesWhenRateLimited(t *testing.T) {
 	var searches int32
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -262,8 +290,8 @@ func TestGithubSearchTerminatesWhenRateLimited(t *testing.T) {
 	case <-time.After(20 * time.Second):
 		t.Fatal("search did not terminate while rate limited")
 	}
-	if got := atomic.LoadInt32(&searches); got != int32(maxAttempts) {
-		t.Errorf("got %d search requests, want %d", got, maxAttempts)
+	if got := atomic.LoadInt32(&searches); got != 1 {
+		t.Errorf("got %d search requests, want 1: a primary rate limit must not be retried", got)
 	}
 }
 

@@ -109,10 +109,10 @@ func (g *Github) Search(ctx context.Context, terms string, opts SearchOptions) (
 
 const maxAttempts = 3
 
-// retry runs fn until it succeeds, until it fails with something other than a
-// rate limit, or until maxAttempts have been made. Pagination must not be
-// driven from here: mixing the two is what previously let a permanently rate
-// limited search spin forever without ever returning an error.
+// retry runs fn until it succeeds, until it fails with something not worth
+// retrying, or until maxAttempts have been made. Pagination must not be driven
+// from here: mixing the two is what previously let a permanently rate limited
+// search spin forever without ever returning an error.
 func retry(ctx context.Context, fn func() error) error {
 	var err error
 	for attempt := 1; ; attempt++ {
@@ -122,32 +122,42 @@ func retry(ctx context.Context, fn func() error) error {
 		if err = fn(); err == nil {
 			return nil
 		}
-		delay, retryable := rateLimitDelay(err)
+		delay, retryable := retryDelay(err)
 		if !retryable {
 			return err
 		}
 		if attempt >= maxAttempts {
 			return fmt.Errorf("giving up after %d attempts: %w", maxAttempts, err)
 		}
-		logrus.Warnf("Rate limited, waiting %s before retry %d/%d", delay.Round(time.Second), attempt+1, maxAttempts)
+		logrus.Warnf("Throttled, waiting %s before retry %d/%d", delay.Round(time.Second), attempt+1, maxAttempts)
 		if serr := sleep(ctx, delay); serr != nil {
 			return serr
 		}
 	}
 }
 
-// rateLimitDelay reports how long to wait before retrying err, and whether err
-// is a rate limit at all. The reset time is in the past once the window has
-// already rolled over, which must not turn into a negative sleep.
-func rateLimitDelay(err error) (time.Duration, bool) {
-	var rlErr *github.RateLimitError
-	if errors.As(err, &rlErr) {
-		return max(time.Until(rlErr.Rate.Reset.Time), 0), true
-	}
+// defaultSecondaryRateLimitDelay is what to wait when GitHub signals a
+// secondary rate limit without saying for how long. Their guidance is to wait
+// at least a minute; --timeout is the way to bound that.
+const defaultSecondaryRateLimitDelay = time.Minute
+
+// retryDelay reports how long to wait before retrying err, and whether err is
+// worth retrying at all.
+//
+// Primary rate limits are not. They mean the quota for a whole window is spent,
+// and the window is long compared to a single command: 30 requests a minute for
+// code search, an hour for the core API. Waiting one out would hang the search
+// for minutes and then spend the fresh quota on the same query that exhausted
+// it, so it is reported immediately and the caller can decide when to come
+// back. The error carries the reset time.
+//
+// Secondary limits are the opposite case: short-lived throttling with an
+// explicit Retry-After, which is exactly what a retry is for.
+func retryDelay(err error) (time.Duration, bool) {
 	var abuseErr *github.AbuseRateLimitError
 	if errors.As(err, &abuseErr) {
 		if abuseErr.RetryAfter == nil {
-			return 0, true
+			return defaultSecondaryRateLimitDelay, true
 		}
 		return max(*abuseErr.RetryAfter, 0), true
 	}
