@@ -2,12 +2,14 @@ package codesearch
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
 	goregexp "regexp"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/google/codesearch/index"
 	"github.com/google/codesearch/regexp"
@@ -23,6 +25,7 @@ type Csearch struct {
 	linesAfter        int
 	caseInsensitive   bool
 	searchInFilenames bool
+	timeout           time.Duration
 }
 
 func (g *Csearch) New(name string, params BackendParams) (Backend, error) {
@@ -66,6 +69,10 @@ func (g *Csearch) SetSearchInFilenames(v bool) {
 	g.searchInFilenames = v
 }
 
+func (g *Csearch) SetTimeout(d time.Duration) {
+	g.timeout = d
+}
+
 func clamp(v, lo, hi int) int {
 	if v < lo {
 		return lo
@@ -101,6 +108,9 @@ func (g *Csearch) Search(searchString string, opts ...Opt) (Results, error) {
 	for _, opt := range opts {
 		opt(g)
 	}
+	ctx, cancel := searchContext(g.timeout)
+	defer cancel()
+
 	pattern := "(?m)" + searchString
 	if g.caseInsensitive {
 		pattern = "(?i)" + pattern
@@ -158,16 +168,19 @@ func (g *Csearch) Search(searchString string, opts ...Opt) (Results, error) {
 	}
 	q := index.RegexpQuery(re.Syntax)
 	post := ix.PostingQuery(q)
-	return g.toResult(pattern, ix, grep, post)
+	return g.toResult(ctx, pattern, ix, grep, post)
 }
 
-func (g *Csearch) toResult(pattern string, ix *index.Index, grep regexp.Grep, post []uint32) (Results, error) {
+func (g *Csearch) toResult(ctx context.Context, pattern string, ix *index.Index, grep regexp.Grep, post []uint32) (Results, error) {
 	var results Results
 	re, err := goregexp.Compile(pattern)
 	if err != nil {
 		return nil, fmt.Errorf("failed to compile pattern for indexing: %w", err)
 	}
 	for _, fileid := range post {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
 		name := ix.Name(fileid)
 		logrus.Debugf("fileid=%d name=%q", fileid, name)
 		grep.File(name)

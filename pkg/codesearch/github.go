@@ -3,6 +3,7 @@ package codesearch
 import (
 	"context"
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"net/url"
 	"strings"
@@ -22,6 +23,7 @@ type Github struct {
 	linesAfter        int
 	caseInsensitive   bool
 	searchInFilenames bool
+	timeout           time.Duration
 }
 
 func (g *Github) New(name string, params BackendParams) (Backend, error) {
@@ -73,6 +75,10 @@ func (g *Github) SetSearchInFilenames(v bool) {
 	g.searchInFilenames = v
 }
 
+func (g *Github) SetTimeout(d time.Duration) {
+	g.timeout = d
+}
+
 func (g *Github) Search(terms string, opts ...Opt) (Results, error) {
 	searchstring := terms
 	if g.org != "" {
@@ -92,31 +98,93 @@ func (g *Github) Search(terms string, opts ...Opt) (Results, error) {
 			return nil, fmt.Errorf("failed to configure GitHub Enterprise URLs: %w", err)
 		}
 	}
-	ctx := context.Background()
+	ctx, cancel := searchContext(g.timeout)
+	defer cancel()
+
 	sopts := github.SearchOptions{TextMatch: true}
 	var csresults []*github.CodeResult
-loop:
 	for {
-		for attempt := 0; attempt < 3; attempt++ {
-			results, response, err := client.Search.Code(ctx, searchstring, &sopts)
+		var (
+			results  *github.CodeSearchResult
+			response *github.Response
+		)
+		err := retry(ctx, func() error {
+			var err error
+			results, response, err = client.Search.Code(ctx, searchstring, &sopts)
 			logrus.Debugf("Response: %+v", response)
-			if err != nil {
-				if rlerr, ok := err.(*github.RateLimitError); ok {
-					delay := time.Until(rlerr.Rate.Reset.Time)
-					logrus.Debugf("Hit rate limit, waiting %s before retrying", delay)
-					time.Sleep(delay)
-					continue
-				}
-				return nil, fmt.Errorf("search failed: %w", err)
-			}
-			csresults = append(csresults, results.CodeResults...)
-			if response.NextPage == 0 {
-				break loop
-			}
-			sopts.Page = response.NextPage
+			return err
+		})
+		if err != nil {
+			return nil, fmt.Errorf("search failed: %w", err)
 		}
+		csresults = append(csresults, results.CodeResults...)
+		if response.NextPage == 0 {
+			break
+		}
+		sopts.Page = response.NextPage
 	}
 	return g.toResult(ctx, client, csresults)
+}
+
+const maxAttempts = 3
+
+// retry runs fn until it succeeds, until it fails with something other than a
+// rate limit, or until maxAttempts have been made. Pagination must not be
+// driven from here: mixing the two is what previously let a permanently rate
+// limited search spin forever without ever returning an error.
+func retry(ctx context.Context, fn func() error) error {
+	var err error
+	for attempt := 1; ; attempt++ {
+		if cerr := ctx.Err(); cerr != nil {
+			return cerr
+		}
+		if err = fn(); err == nil {
+			return nil
+		}
+		delay, retryable := rateLimitDelay(err)
+		if !retryable {
+			return err
+		}
+		if attempt >= maxAttempts {
+			return fmt.Errorf("giving up after %d attempts: %w", maxAttempts, err)
+		}
+		logrus.Debugf("Hit rate limit, waiting %s before retry %d/%d", delay, attempt+1, maxAttempts)
+		if serr := sleep(ctx, delay); serr != nil {
+			return serr
+		}
+	}
+}
+
+// rateLimitDelay reports how long to wait before retrying err, and whether err
+// is a rate limit at all. The reset time is in the past once the window has
+// already rolled over, which must not turn into a negative sleep.
+func rateLimitDelay(err error) (time.Duration, bool) {
+	var rlErr *github.RateLimitError
+	if errors.As(err, &rlErr) {
+		return max(time.Until(rlErr.Rate.Reset.Time), 0), true
+	}
+	var abuseErr *github.AbuseRateLimitError
+	if errors.As(err, &abuseErr) {
+		if abuseErr.RetryAfter == nil {
+			return 0, true
+		}
+		return max(*abuseErr.RetryAfter, 0), true
+	}
+	return 0, false
+}
+
+func sleep(ctx context.Context, d time.Duration) error {
+	if d <= 0 {
+		return nil
+	}
+	t := time.NewTimer(d)
+	defer t.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-t.C:
+		return nil
+	}
 }
 
 func (g *Github) toResult(ctx context.Context, client *github.Client, csresults []*github.CodeResult) (Results, error) {
@@ -131,16 +199,16 @@ func (g *Github) toResult(ctx context.Context, client *github.Client, csresults 
 		logrus.Debugf("  TextMatches:\n")
 		for idx, tm := range res.TextMatches {
 			fullPath := fmt.Sprintf("%s/%s/%s", *res.Repository.Owner.Login, *res.Repository.Name, *res.Path)
-			var (
-				rc   *github.RepositoryContent
-				resp *github.Response
-				err  error
-			)
-			for attempt := 0; attempt < 3; attempt++ {
+			var rc *github.RepositoryContent
+			err := retry(ctx, func() error {
 				logrus.Debugf("Fetching file content, owner=%q repo=%q path=%q",
 					*res.Repository.Owner.Login,
 					*res.Repository.Name,
 					*res.Path,
+				)
+				var (
+					resp *github.Response
+					err  error
 				)
 				rc, _, resp, err = client.Repositories.GetContents(
 					ctx,
@@ -151,16 +219,10 @@ func (g *Github) toResult(ctx context.Context, client *github.Client, csresults 
 				)
 				logrus.Debugf("Response: %+v", resp)
 				logrus.Debugf("RepositoryContent: %+v", rc)
-				if err != nil {
-					if rlerr, ok := err.(*github.RateLimitError); ok {
-						delay := time.Until(rlerr.Rate.Reset.Time)
-						logrus.Debugf("Hit rate limit, waiting %s before retrying", delay)
-						time.Sleep(delay)
-						continue
-					}
-					return nil, fmt.Errorf("failed to get content of file %q: %w", fullPath, err)
-				}
-				break
+				return err
+			})
+			if err != nil {
+				return nil, fmt.Errorf("failed to get content of file %q: %w", fullPath, err)
 			}
 			b64bytes, err := base64.StdEncoding.DecodeString(*rc.Content)
 			if err != nil {

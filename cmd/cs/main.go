@@ -37,6 +37,7 @@ var (
 	flagCaseInsensitive     bool
 	flagLimit               uint
 	flagSort                string
+	flagTimeout             time.Duration
 
 	searchBackends string
 
@@ -64,6 +65,7 @@ func init() {
 	searchCmd.PersistentFlags().BoolVarP(&flagCaseInsensitive, "case-insensitive", "i", false, "Case-insensitive search")
 	searchCmd.PersistentFlags().UintVarP(&flagLimit, "limit", "l", 0, "Limit the amount of results that are printed per backend. 0 means no limit")
 	searchCmd.PersistentFlags().StringVarP(&flagSort, "sort", "s", "", "Sort the results. Possible values: \"a-z\", \"z-a\"")
+	searchCmd.PersistentFlags().DurationVarP(&flagTimeout, "timeout", "t", 0, "Maximum time to spend on each backend, e.g. \"30s\" or \"2m\". 0 means no limit")
 
 	rootCmd.AddCommand(searchCmd)
 	rootCmd.AddCommand(listCmd)
@@ -86,6 +88,7 @@ var flagToConfigKey = map[string]string{
 	"case-insensitive":    "defaults.case_insensitive",
 	"search-in-filenames": "defaults.search_in_filenames",
 	"match-filename":      "defaults.match_filename",
+	"timeout":             "defaults.timeout",
 }
 
 func bindFlags() {
@@ -116,6 +119,7 @@ func resolveFlags() {
 	flagCaseInsensitive = viper.GetBool("defaults.case_insensitive")
 	flagSearchInFilenames = viper.GetBool("defaults.search_in_filenames")
 	flagMatchFilename = viper.GetString("defaults.match_filename")
+	flagTimeout = viper.GetDuration("defaults.timeout")
 
 	if flagDebug {
 		logrus.SetLevel(logrus.DebugLevel)
@@ -291,6 +295,7 @@ var searchCmd = &cobra.Command{
 				codesearch.WithLinesAfter(flagSearchContextAfter),
 				codesearch.WithCaseInsensitive(flagCaseInsensitive),
 				codesearch.WithSearchInFilenames(flagSearchInFilenames),
+				codesearch.WithTimeout(flagTimeout),
 			)
 			if err != nil {
 				logrus.Fatalf("Failed to search with backend %q: %v", b.Name(), err)

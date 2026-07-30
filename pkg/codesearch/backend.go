@@ -1,5 +1,10 @@
 package codesearch
 
+import (
+	"context"
+	"time"
+)
+
 type Backend interface {
 	New(name string, params BackendParams) (Backend, error)
 	Name() string
@@ -8,6 +13,7 @@ type Backend interface {
 	SetLinesAfter(n int)
 	SetCaseInsensitive(v bool)
 	SetSearchInFilenames(v bool)
+	SetTimeout(d time.Duration)
 	Search(terms string, opts ...Opt) (Results, error)
 }
 
@@ -35,6 +41,21 @@ func WithSearchInFilenames(v bool) Opt {
 	return func(b Backend) {
 		b.SetSearchInFilenames(v)
 	}
+}
+
+func WithTimeout(d time.Duration) Opt {
+	return func(b Backend) {
+		b.SetTimeout(d)
+	}
+}
+
+// searchContext returns a context bounding a single search. A non-positive
+// timeout means no deadline.
+func searchContext(timeout time.Duration) (context.Context, context.CancelFunc) {
+	if timeout <= 0 {
+		return context.WithCancel(context.Background())
+	}
+	return context.WithTimeout(context.Background(), timeout)
 }
 
 func BackendByType(t BackendType) Backend {

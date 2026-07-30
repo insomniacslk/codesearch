@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net/url"
 	"strings"
+	"time"
 
 	"github.com/sirupsen/logrus"
 	gitlab "github.com/xanzy/go-gitlab"
@@ -20,6 +21,7 @@ type Gitlab struct {
 	linesAfter        int
 	caseInsensitive   bool
 	searchInFilenames bool
+	timeout           time.Duration
 }
 
 func (g *Gitlab) New(name string, params BackendParams) (Backend, error) {
@@ -82,6 +84,10 @@ func (g *Gitlab) SetSearchInFilenames(v bool) {
 	g.searchInFilenames = v
 }
 
+func (g *Gitlab) SetTimeout(d time.Duration) {
+	g.timeout = d
+}
+
 func (g *Gitlab) Search(searchString string, opts ...Opt) (Results, error) {
 	for _, opt := range opts {
 		opt(g)
@@ -103,13 +109,16 @@ func (g *Gitlab) Search(searchString string, opts ...Opt) (Results, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to set up Gitlab client: %w", err)
 	}
+	ctx, cancel := searchContext(g.timeout)
+	defer cancel()
+	withCtx := gitlab.WithContext(ctx)
 	var (
 		blobs []*gitlab.Blob
 	)
 	if g.group != "" {
 		// get group ID
 		// XXX Should this request be paginated as well?
-		groups, response, err := client.Groups.ListGroups(&gitlab.ListGroupsOptions{})
+		groups, response, err := client.Groups.ListGroups(&gitlab.ListGroupsOptions{}, withCtx)
 		logrus.Debugf("Search.ListGroups response: %+v", response)
 		if err != nil {
 			return nil, fmt.Errorf("failed to get group list: %w", err)
@@ -126,7 +135,7 @@ func (g *Gitlab) Search(searchString string, opts ...Opt) (Results, error) {
 		}
 		sopts := gitlab.SearchOptions{ListOptions: gitlab.ListOptions{PerPage: 100}}
 		for {
-			someBlobs, response, err := client.Search.BlobsByGroup(groupID, searchString, &sopts)
+			someBlobs, response, err := client.Search.BlobsByGroup(groupID, searchString, &sopts, withCtx)
 			logrus.Debugf("Search.BlobsByGroup response: %+v", response)
 			if err != nil {
 				return nil, fmt.Errorf("failed to search blobs by project: %w", err)
@@ -140,7 +149,7 @@ func (g *Gitlab) Search(searchString string, opts ...Opt) (Results, error) {
 	} else if g.project != "" {
 		// get project ID
 		// XXX Should this request be paginated as well?
-		projects, response, err := client.Projects.ListProjects(&gitlab.ListProjectsOptions{})
+		projects, response, err := client.Projects.ListProjects(&gitlab.ListProjectsOptions{}, withCtx)
 		logrus.Debugf("Search.ListProjects response: %+v", response)
 		if err != nil {
 			return nil, fmt.Errorf("failed to get project list: %w", err)
@@ -154,7 +163,7 @@ func (g *Gitlab) Search(searchString string, opts ...Opt) (Results, error) {
 		}
 		sopts := gitlab.SearchOptions{ListOptions: gitlab.ListOptions{PerPage: 100}}
 		for {
-			someBlobs, response, err := client.Search.BlobsByProject(projectID, searchString, &sopts)
+			someBlobs, response, err := client.Search.BlobsByProject(projectID, searchString, &sopts, withCtx)
 			logrus.Debugf("Search.BlobsByProject response: %+v", response)
 			if err != nil {
 				return nil, fmt.Errorf("failed to search blobs by group: %w", err)
@@ -168,7 +177,7 @@ func (g *Gitlab) Search(searchString string, opts ...Opt) (Results, error) {
 	} else {
 		sopts := gitlab.SearchOptions{ListOptions: gitlab.ListOptions{PerPage: 100}}
 		for {
-			someBlobs, response, err := client.Search.Blobs(searchString, &sopts)
+			someBlobs, response, err := client.Search.Blobs(searchString, &sopts, withCtx)
 			logrus.Debugf("Search.Blobs response: %+v", response)
 			if err != nil {
 				return nil, fmt.Errorf("failed to search blobs: %w", err)
@@ -180,10 +189,10 @@ func (g *Gitlab) Search(searchString string, opts ...Opt) (Results, error) {
 			}
 		}
 	}
-	return g.toResult(client, searchString, blobs)
+	return g.toResult(client, withCtx, searchString, blobs)
 }
 
-func (g *Gitlab) toResult(client *gitlab.Client, searchString string, blobs []*gitlab.Blob) (Results, error) {
+func (g *Gitlab) toResult(client *gitlab.Client, withCtx gitlab.RequestOptionFunc, searchString string, blobs []*gitlab.Blob) (Results, error) {
 	var (
 		results  Results
 		projects = make(map[int]*gitlab.Project, 0)
@@ -200,7 +209,7 @@ func (g *Gitlab) toResult(client *gitlab.Client, searchString string, blobs []*g
 		logrus.Debugf("  ProjectID: %d", blob.ProjectID)
 
 		if _, ok := projects[blob.ProjectID]; !ok {
-			project, response, err := client.Projects.GetProject(blob.ProjectID, &gitlab.GetProjectOptions{})
+			project, response, err := client.Projects.GetProject(blob.ProjectID, &gitlab.GetProjectOptions{}, withCtx)
 			logrus.Debugf("Projects.GetProject response: %+v", response)
 			if err != nil {
 				return nil, fmt.Errorf("failed to get project with ID %q: %w", blob.ProjectID, err)
