@@ -112,85 +112,44 @@ func (g *Gitlab) Search(searchString string, opts ...Opt) (Results, error) {
 	ctx, cancel := searchContext(g.timeout)
 	defer cancel()
 	withCtx := gitlab.WithContext(ctx)
+	// The search endpoints take an ID or a URL-encoded path, so the configured
+	// group or project is passed straight through. Resolving it to a numeric
+	// ID first would mean listing every group or project the token can see.
 	var (
-		blobs []*gitlab.Blob
+		scope  string
+		search func(*gitlab.SearchOptions) ([]*gitlab.Blob, *gitlab.Response, error)
 	)
-	if g.group != "" {
-		// get group ID
-		// XXX Should this request be paginated as well?
-		groups, response, err := client.Groups.ListGroups(&gitlab.ListGroupsOptions{}, withCtx)
-		logrus.Debugf("Search.ListGroups response: %+v", response)
+	switch {
+	case g.group != "":
+		scope = fmt.Sprintf("group %q", g.group)
+		search = func(sopts *gitlab.SearchOptions) ([]*gitlab.Blob, *gitlab.Response, error) {
+			return client.Search.BlobsByGroup(g.group, searchString, sopts, withCtx)
+		}
+	case g.project != "":
+		scope = fmt.Sprintf("project %q", g.project)
+		search = func(sopts *gitlab.SearchOptions) ([]*gitlab.Blob, *gitlab.Response, error) {
+			return client.Search.BlobsByProject(g.project, searchString, sopts, withCtx)
+		}
+	default:
+		scope = "all projects"
+		search = func(sopts *gitlab.SearchOptions) ([]*gitlab.Blob, *gitlab.Response, error) {
+			return client.Search.Blobs(searchString, sopts, withCtx)
+		}
+	}
+
+	var blobs []*gitlab.Blob
+	sopts := gitlab.SearchOptions{ListOptions: gitlab.ListOptions{PerPage: 100}}
+	for {
+		someBlobs, response, err := search(&sopts)
+		logrus.Debugf("Search response: %+v", response)
 		if err != nil {
-			return nil, fmt.Errorf("failed to get group list: %w", err)
+			return nil, fmt.Errorf("failed to search blobs in %s: %w", scope, err)
 		}
-		groupID := -1
-		for _, group := range groups {
-			if group.Name == g.group {
-				groupID = group.ID
-				break
-			}
+		blobs = append(blobs, someBlobs...)
+		if response.NextPage == 0 {
+			break
 		}
-		if groupID == -1 {
-			return nil, fmt.Errorf("group %q not found", g.group)
-		}
-		sopts := gitlab.SearchOptions{ListOptions: gitlab.ListOptions{PerPage: 100}}
-		for {
-			someBlobs, response, err := client.Search.BlobsByGroup(groupID, searchString, &sopts, withCtx)
-			logrus.Debugf("Search.BlobsByGroup response: %+v", response)
-			if err != nil {
-				return nil, fmt.Errorf("failed to search blobs by project: %w", err)
-			}
-			sopts.Page = response.NextPage
-			blobs = append(blobs, someBlobs...)
-			if response.NextPage == 0 {
-				break
-			}
-		}
-	} else if g.project != "" {
-		// get project ID
-		// XXX Should this request be paginated as well?
-		projects, response, err := client.Projects.ListProjects(&gitlab.ListProjectsOptions{}, withCtx)
-		logrus.Debugf("Search.ListProjects response: %+v", response)
-		if err != nil {
-			return nil, fmt.Errorf("failed to get project list: %w", err)
-		}
-		projectID := -1
-		for _, proj := range projects {
-			if proj.Name == g.project {
-				projectID = proj.ID
-				break
-			}
-		}
-		if projectID == -1 {
-			return nil, fmt.Errorf("project %q not found", g.project)
-		}
-		sopts := gitlab.SearchOptions{ListOptions: gitlab.ListOptions{PerPage: 100}}
-		for {
-			someBlobs, response, err := client.Search.BlobsByProject(projectID, searchString, &sopts, withCtx)
-			logrus.Debugf("Search.BlobsByProject response: %+v", response)
-			if err != nil {
-				return nil, fmt.Errorf("failed to search blobs by group: %w", err)
-			}
-			sopts.Page = response.NextPage
-			blobs = append(blobs, someBlobs...)
-			if response.NextPage == 0 {
-				break
-			}
-		}
-	} else {
-		sopts := gitlab.SearchOptions{ListOptions: gitlab.ListOptions{PerPage: 100}}
-		for {
-			someBlobs, response, err := client.Search.Blobs(searchString, &sopts, withCtx)
-			logrus.Debugf("Search.Blobs response: %+v", response)
-			if err != nil {
-				return nil, fmt.Errorf("failed to search blobs: %w", err)
-			}
-			sopts.Page = response.NextPage
-			blobs = append(blobs, someBlobs...)
-			if response.NextPage == 0 {
-				break
-			}
-		}
+		sopts.Page = response.NextPage
 	}
 	return g.toResult(client, withCtx, searchString, blobs)
 }

@@ -60,9 +60,13 @@ backends:
       # Token used to authenticate to the search API. See Personal Access Tokens
       # at https://docs.gitlab.com/ee/user/profile/personal_access_tokens.html
       token: your-token
-      # set either group or project, but not both
+      # Set either group or project, but not both. Leaving both empty searches
+      # every project the token can see.
+      # Each one is a numeric ID or a full path as it appears in the URL, not
+      # the display name, so a nested group is written "top-level/subgroup"
+      # and a project is written "namespace/project".
       group:
-      project: your-project
+      project: your-namespace/your-project
 
   # Configuration for the `csearch` backend. `csearch` is based on the
   # google/codesearch library to search on a pre-built index of local files.
