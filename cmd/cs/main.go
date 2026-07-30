@@ -220,6 +220,45 @@ func repoNameFromRes(res *codesearch.Result) string {
 	return repoName
 }
 
+// searchOutcome is what one backend produced, including a failure. Failures
+// are carried rather than raised so that one unreachable backend does not
+// discard the results of the others.
+type searchOutcome struct {
+	backend  codesearch.Backend
+	results  codesearch.Results
+	duration time.Duration
+	printed  int
+	err      error
+}
+
+func runSearches(backends []codesearch.Backend, searchString string, opts ...codesearch.Opt) []searchOutcome {
+	outcomes := make([]searchOutcome, 0, len(backends))
+	for _, b := range backends {
+		start := time.Now()
+		results, err := b.Search(searchString, opts...)
+		if err != nil {
+			logrus.Errorf("Backend %q failed: %v", b.Name(), err)
+		}
+		outcomes = append(outcomes, searchOutcome{
+			backend:  b,
+			results:  results,
+			duration: time.Since(start),
+			err:      err,
+		})
+	}
+	return outcomes
+}
+
+func failedSearches(outcomes []searchOutcome) []searchOutcome {
+	var failed []searchOutcome
+	for _, o := range outcomes {
+		if o.err != nil {
+			failed = append(failed, o)
+		}
+	}
+	return failed
+}
+
 // capabilityFlags names the command line flag that requests each capability,
 // so an unsupported combination can be reported in the user's terms.
 var capabilityFlags = map[codesearch.Capability]string{
@@ -366,33 +405,23 @@ var searchCmd = &cobra.Command{
 			fmt.Fprintf(os.Stderr, "Requested options are not supported:\n%v\n", err)
 			os.Exit(1)
 		}
-		type stat struct {
-			name     string
-			duration time.Duration
-			results  int
-		}
-		stats := make([]stat, 0, len(backends))
 		searchStart := time.Now()
+		outcomes := runSearches(backends, searchString,
+			codesearch.WithLinesBefore(flagSearchContextBefore),
+			codesearch.WithLinesAfter(flagSearchContextAfter),
+			codesearch.WithCaseInsensitive(flagCaseInsensitive),
+			codesearch.WithSearchInFilenames(flagSearchInFilenames),
+			codesearch.WithTimeout(flagTimeout),
+		)
 		totalResults := 0
-		for _, b := range backends {
-			start := time.Now()
-			results, err := b.Search(
-				searchString,
-				codesearch.WithLinesBefore(flagSearchContextBefore),
-				codesearch.WithLinesAfter(flagSearchContextAfter),
-				codesearch.WithCaseInsensitive(flagCaseInsensitive),
-				codesearch.WithSearchInFilenames(flagSearchInFilenames),
-				codesearch.WithTimeout(flagTimeout),
-			)
-			if err != nil {
-				logrus.Fatalf("Failed to search with backend %q: %v", b.Name(), err)
+		for i := range outcomes {
+			o := &outcomes[i]
+			if o.err != nil {
+				continue
 			}
-			st := stat{
-				name:     b.Name(),
-				duration: time.Since(start),
-			}
+			b := o.backend
 			// sort the results, if requested
-			results = sorter(results)
+			results := sorter(o.results)
 			var numResults int
 			if flagSearchInFilenames {
 				selected := selectFilenames(results, flagLimit)
@@ -434,17 +463,31 @@ var searchCmd = &cobra.Command{
 				}
 				numResults = len(selected)
 			}
-			st.results = numResults
-			stats = append(stats, st)
+			o.printed = numResults
 			totalResults += numResults
 		}
 		totalTime := time.Since(searchStart)
 		if flagStats {
-			for _, st := range stats {
-				fmt.Fprintf(os.Stderr, "Got %d results on %q in %s\n", st.results, st.name, st.duration)
+			for _, o := range outcomes {
+				if o.err != nil {
+					fmt.Fprintf(os.Stderr, "Failed on %q after %s\n", o.backend.Name(), o.duration)
+					continue
+				}
+				fmt.Fprintf(os.Stderr, "Got %d results on %q in %s\n", o.printed, o.backend.Name(), o.duration)
 			}
 		}
 		fmt.Fprintf(os.Stderr, "Got %d total results in %s\n", totalResults, totalTime)
+
+		// Results from the backends that did work are already printed, so a
+		// failure elsewhere is reported at the end and reflected in the exit
+		// status rather than discarding everything.
+		if failed := failedSearches(outcomes); len(failed) > 0 {
+			fmt.Fprintf(os.Stderr, "\n%d of %d backends failed:\n", len(failed), len(outcomes))
+			for _, o := range failed {
+				fmt.Fprintf(os.Stderr, "  %s: %v\n", o.backend.Name(), o.err)
+			}
+			os.Exit(1)
+		}
 	},
 }
 

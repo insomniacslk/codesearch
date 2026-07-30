@@ -1,9 +1,11 @@
 package main
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -345,8 +347,12 @@ func equalStrings(a, b []string) bool {
 }
 
 type fakeBackend struct {
-	name string
-	caps map[codesearch.Capability]bool
+	name    string
+	caps    map[codesearch.Capability]bool
+	results codesearch.Results
+	err     error
+	delay   time.Duration
+	calls   int32
 }
 
 func (f *fakeBackend) New(string, codesearch.BackendParams) (codesearch.Backend, error) {
@@ -361,7 +367,11 @@ func (f *fakeBackend) SetCaseInsensitive(bool)               {}
 func (f *fakeBackend) SetSearchInFilenames(bool)             {}
 func (f *fakeBackend) SetTimeout(time.Duration)              {}
 func (f *fakeBackend) Search(string, ...codesearch.Opt) (codesearch.Results, error) {
-	return nil, nil
+	atomic.AddInt32(&f.calls, 1)
+	if f.delay > 0 {
+		time.Sleep(f.delay)
+	}
+	return f.results, f.err
 }
 
 func TestCheckCapabilities(t *testing.T) {
@@ -451,5 +461,69 @@ func TestCapabilityFlagsAreNamed(t *testing.T) {
 		if capabilityFlags[c] == "" {
 			t.Errorf("capability %q has no flag name", c)
 		}
+	}
+}
+
+// TestRunSearchesKeepsGoingAfterAFailure covers the regression where a single
+// backend error called logrus.Fatalf, throwing away results that other
+// backends had already returned.
+func TestRunSearchesKeepsGoingAfterAFailure(t *testing.T) {
+	boom := errors.New("upstream 502")
+	backends := []codesearch.Backend{
+		&fakeBackend{name: "first", results: codesearch.Results{{Path: "a.go"}}},
+		&fakeBackend{name: "broken", err: boom},
+		&fakeBackend{name: "last", results: codesearch.Results{{Path: "b.go"}, {Path: "c.go"}}},
+	}
+
+	outcomes := runSearches(backends, "needle")
+
+	if len(outcomes) != len(backends) {
+		t.Fatalf("got %d outcomes, want %d", len(outcomes), len(backends))
+	}
+	// every backend was asked, including the ones after the failure
+	for _, b := range backends {
+		if got := atomic.LoadInt32(&b.(*fakeBackend).calls); got != 1 {
+			t.Errorf("backend %q: got %d calls, want 1", b.Name(), got)
+		}
+	}
+	if got, want := len(outcomes[0].results), 1; got != want {
+		t.Errorf("first: got %d results, want %d", got, want)
+	}
+	if !errors.Is(outcomes[1].err, boom) {
+		t.Errorf("broken: got error %v, want %v", outcomes[1].err, boom)
+	}
+	if got, want := len(outcomes[2].results), 2; got != want {
+		t.Errorf("last: got %d results, want %d", got, want)
+	}
+}
+
+func TestFailedSearches(t *testing.T) {
+	outcomes := []searchOutcome{
+		{backend: &fakeBackend{name: "ok"}},
+		{backend: &fakeBackend{name: "bad"}, err: errors.New("boom")},
+		{backend: &fakeBackend{name: "worse"}, err: errors.New("kaboom")},
+	}
+	failed := failedSearches(outcomes)
+	if got, want := len(failed), 2; got != want {
+		t.Fatalf("got %d failures, want %d", got, want)
+	}
+	if failed[0].backend.Name() != "bad" || failed[1].backend.Name() != "worse" {
+		t.Errorf("got %q and %q, want bad and worse",
+			failed[0].backend.Name(), failed[1].backend.Name())
+	}
+
+	if got := failedSearches(outcomes[:1]); len(got) != 0 {
+		t.Errorf("got %d failures for an all-clear run, want 0", len(got))
+	}
+	if got := failedSearches(nil); len(got) != 0 {
+		t.Errorf("got %d failures for no outcomes, want 0", len(got))
+	}
+}
+
+func TestRunSearchesRecordsDuration(t *testing.T) {
+	backends := []codesearch.Backend{&fakeBackend{name: "slow", delay: 20 * time.Millisecond}}
+	outcomes := runSearches(backends, "needle")
+	if outcomes[0].duration < 20*time.Millisecond {
+		t.Errorf("got duration %s, want at least 20ms", outcomes[0].duration)
 	}
 }
