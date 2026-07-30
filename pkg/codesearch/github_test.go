@@ -355,6 +355,35 @@ func TestGithubSearchDecodesFileContent(t *testing.T) {
 	if got, want := r.Line[r.Highlight[0]:r.Highlight[1]], "needle"; got != want {
 		t.Errorf("highlight: got %q, want %q", got, want)
 	}
+	// the anchor must point at the line the tool reports, not one past it
+	if got, want := r.FileURL, "https://example.com/testorg/repo/blob/main/src/f.go#L3"; got != want {
+		t.Errorf("file URL: got %q, want %q", got, want)
+	}
+	if !strings.HasSuffix(r.FileURL, fmt.Sprintf("#L%d", r.Lineno)) {
+		t.Errorf("file URL %q does not anchor line %d", r.FileURL, r.Lineno)
+	}
+}
+
+// TestGithubFileURLAnchorMatchesLineno pins the anchor to the reported line
+// number across several positions in the file.
+func TestGithubFileURLAnchorMatchesLineno(t *testing.T) {
+	file := "one\ntwo\nthree needle\nfour\nfive needle\n"
+	srv := githubServer(t, codeResultJSON("src/f.go", "three needle", 6, 12),
+		fileContents(base64File(file)))
+	defer srv.Close()
+
+	results, err := newGithubBackend(t, srv.URL).Search("needle")
+	if err != nil {
+		t.Fatalf("search failed: %v", err)
+	}
+	if len(results) == 0 {
+		t.Fatal("got no results")
+	}
+	for _, r := range results {
+		if got, want := r.FileURL, fmt.Sprintf("https://example.com/testorg/repo/blob/main/src/f.go#L%d", r.Lineno); got != want {
+			t.Errorf("file URL: got %q, want %q", got, want)
+		}
+	}
 }
 
 // TestGithubSearchLargeFile covers the >1MB case, where GitHub reports

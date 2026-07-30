@@ -274,7 +274,7 @@ func (g *Github) toResult(ctx context.Context, client *github.Client, csresults 
 				if err != nil {
 					return nil, fmt.Errorf("invalid file URL %q: %q", res.GetHTMLURL(), err)
 				}
-				fileURLwithLineno.Fragment = fmt.Sprintf("L%d", lineno+1)
+				fileURLwithLineno.Fragment = fmt.Sprintf("L%d", lineno)
 				beforeIdx := lineno - 1 - g.linesBefore
 				if beforeIdx < 0 {
 					beforeIdx = 0
