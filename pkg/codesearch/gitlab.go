@@ -8,7 +8,7 @@ import (
 	"time"
 
 	"github.com/sirupsen/logrus"
-	gitlab "github.com/xanzy/go-gitlab"
+	gitlab "gitlab.com/gitlab-org/api/client-go"
 )
 
 // Gitlab implements the Backend interface
@@ -166,7 +166,7 @@ func (g *Gitlab) Search(ctx context.Context, searchString string, opts ...Opt) (
 func (g *Gitlab) toResult(client *gitlab.Client, withCtx gitlab.RequestOptionFunc, searchString string, blobs []*gitlab.Blob) (Results, error) {
 	var (
 		results  Results
-		projects = make(map[int]*gitlab.Project, 0)
+		projects = make(map[int64]*gitlab.Project)
 	)
 	for _, blob := range blobs {
 		logrus.Debugf("Result:")
@@ -183,7 +183,7 @@ func (g *Gitlab) toResult(client *gitlab.Client, withCtx gitlab.RequestOptionFun
 			project, response, err := client.Projects.GetProject(blob.ProjectID, &gitlab.GetProjectOptions{}, withCtx)
 			logrus.Debugf("Projects.GetProject response: %+v", response)
 			if err != nil {
-				return nil, fmt.Errorf("failed to get project with ID %q: %w", blob.ProjectID, err)
+				return nil, fmt.Errorf("failed to get project with ID %d: %w", blob.ProjectID, err)
 			}
 			projects[blob.ProjectID] = project
 		}
@@ -226,16 +226,16 @@ func (g *Gitlab) toResult(client *gitlab.Client, withCtx gitlab.RequestOptionFun
 			if afterIdx > len(lines) {
 				afterIdx = len(lines)
 			}
-			result.Lineno = blob.Startline
+			result.Lineno = int(blob.Startline)
 			result.Context = ResultContext{
 				Before: lines[beforeIdx:linenoInBlob],
 				After:  lines[linenoInBlob+1 : afterIdx],
 			}
 			result.Highlight = [2]int{start, end}
 			result.Line = line
-			result.Lineno = blob.Startline + linenoInBlob
+			result.Lineno = int(blob.Startline) + linenoInBlob
 			// add line fragment to URL
-			result.FileURL = fmt.Sprintf("%s/-/blob/%s/%s#L%d", project.WebURL, project.DefaultBranch, blob.Path, blob.Startline+linenoInBlob)
+			result.FileURL = fmt.Sprintf("%s/-/blob/%s/%s#L%d", project.WebURL, project.DefaultBranch, blob.Path, int(blob.Startline)+linenoInBlob)
 		}
 		results = append(results, result)
 	}
