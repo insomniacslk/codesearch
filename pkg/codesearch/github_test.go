@@ -2,6 +2,7 @@ package codesearch
 
 import (
 	"context"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"net/http"
@@ -279,5 +280,123 @@ func TestGithubSearchHonoursTimeout(t *testing.T) {
 	}
 	if elapsed := time.Since(start); elapsed > 400*time.Millisecond {
 		t.Errorf("took %s, want it to stop at the timeout", elapsed)
+	}
+}
+
+// codeResultJSON builds one search hit with a single text match, so that
+// toResult exercises the file content path.
+func codeResultJSON(path, fragment string, start, end int) string {
+	return fmt.Sprintf(`{
+		"name": %q,
+		"path": %q,
+		"sha": "deadbeef",
+		"html_url": "https://example.com/testorg/repo/blob/main/%s",
+		"repository": {
+			"name": "repo",
+			"html_url": "https://example.com/testorg/repo",
+			"owner": {"login": "testorg"}
+		},
+		"text_matches": [{
+			"object_url": "https://example.com/obj",
+			"object_type": "FileContent",
+			"property": "content",
+			"fragment": %q,
+			"matches": [{"text": "needle", "indices": [%d, %d]}]
+		}]
+	}`, path, path, path, fragment, start, end)
+}
+
+// githubServer serves one page of search results plus a contents endpoint.
+func githubServer(t *testing.T, item string, contents func(w http.ResponseWriter)) *httptest.Server {
+	t.Helper()
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.Contains(r.URL.Path, "/search/code"):
+			searchPage(w, r, item, 0)
+		case strings.Contains(r.URL.Path, "/contents/"):
+			contents(w)
+		default:
+			t.Errorf("unexpected request to %s", r.URL.Path)
+			http.NotFound(w, r)
+		}
+	}))
+}
+
+func fileContents(body string) func(http.ResponseWriter) {
+	return func(w http.ResponseWriter) { fmt.Fprint(w, body) }
+}
+
+func base64File(content string) string {
+	return fmt.Sprintf(`{"type":"file","encoding":"base64","name":"f.go","path":"src/f.go","content":%q}`,
+		base64.StdEncoding.EncodeToString([]byte(content)))
+}
+
+func TestGithubSearchDecodesFileContent(t *testing.T) {
+	file := "package main\n\nfunc needle() {}\n"
+	srv := githubServer(t, codeResultJSON("src/f.go", "func needle() {}", 5, 11),
+		fileContents(base64File(file)))
+	defer srv.Close()
+
+	results, err := newGithubBackend(t, srv.URL).Search("needle")
+	if err != nil {
+		t.Fatalf("search failed: %v", err)
+	}
+	if len(results) != 1 {
+		t.Fatalf("got %d results, want 1", len(results))
+	}
+	r := results[0]
+	if got, want := r.Line, "func needle() {}"; got != want {
+		t.Errorf("line: got %q, want %q", got, want)
+	}
+	if got, want := r.Lineno, 3; got != want {
+		t.Errorf("lineno: got %d, want %d", got, want)
+	}
+	if got, want := r.Line[r.Highlight[0]:r.Highlight[1]], "needle"; got != want {
+		t.Errorf("highlight: got %q, want %q", got, want)
+	}
+}
+
+// TestGithubSearchLargeFile covers the >1MB case, where GitHub reports
+// encoding "none" and omits the content entirely. The old code dereferenced
+// Content unconditionally and panicked.
+func TestGithubSearchLargeFile(t *testing.T) {
+	srv := githubServer(t, codeResultJSON("src/f.go", "needle", 0, 6),
+		fileContents(`{"type":"file","encoding":"none","name":"f.go","path":"src/f.go","size":2000000}`))
+	defer srv.Close()
+
+	_, err := newGithubBackend(t, srv.URL).Search("needle")
+	if err == nil {
+		t.Fatal("got nil error, want a failure for an unfetchable file")
+	}
+	if !strings.Contains(err.Error(), "src/f.go") {
+		t.Errorf("error %q does not name the file", err)
+	}
+}
+
+// TestGithubSearchNullContent covers a file entry whose content field is
+// absent, which also used to be dereferenced unconditionally.
+func TestGithubSearchNullContent(t *testing.T) {
+	srv := githubServer(t, codeResultJSON("src/f.go", "needle", 0, 6),
+		fileContents(`{"type":"file","encoding":"base64","name":"f.go","path":"src/f.go"}`))
+	defer srv.Close()
+
+	if _, err := newGithubBackend(t, srv.URL).Search("needle"); err == nil {
+		t.Fatal("got nil error, want a failure for a file with no content")
+	}
+}
+
+// TestGithubSearchDirectoryResponse covers GetContents returning a directory
+// listing, where the file content is nil but there is no error.
+func TestGithubSearchDirectoryResponse(t *testing.T) {
+	srv := githubServer(t, codeResultJSON("src", "needle", 0, 6),
+		fileContents(`[{"type":"file","name":"f.go","path":"src/f.go"}]`))
+	defer srv.Close()
+
+	_, err := newGithubBackend(t, srv.URL).Search("needle")
+	if err == nil {
+		t.Fatal("got nil error, want a failure when the path is a directory")
+	}
+	if !strings.Contains(err.Error(), "no file content") {
+		t.Errorf("got error %q, want it to mention missing file content", err)
 	}
 }

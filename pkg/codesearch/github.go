@@ -2,7 +2,6 @@ package codesearch
 
 import (
 	"context"
-	"encoding/base64"
 	"errors"
 	"fmt"
 	"net/url"
@@ -224,11 +223,18 @@ func (g *Github) toResult(ctx context.Context, client *github.Client, csresults 
 			if err != nil {
 				return nil, fmt.Errorf("failed to get content of file %q: %w", fullPath, err)
 			}
-			b64bytes, err := base64.StdEncoding.DecodeString(*rc.Content)
-			if err != nil {
-				return nil, fmt.Errorf("failed to base64-decode content of file %q: %w", fullPath, err)
+			// GetContents returns a nil file content without an error when the
+			// path turns out to be a directory.
+			if rc == nil {
+				return nil, fmt.Errorf("no file content returned for %q", fullPath)
 			}
-			fullText := string(b64bytes)
+			// GetContent decodes according to the reported encoding and
+			// reports the >1MB "none" case, rather than dereferencing a
+			// Content that GitHub may not have populated at all.
+			fullText, err := rc.GetContent()
+			if err != nil {
+				return nil, fmt.Errorf("failed to read content of file %q: %w", fullPath, err)
+			}
 			// find fragment in full text
 			fragmentStart := strings.Index(fullText, *tm.Fragment)
 			if fragmentStart == -1 {
