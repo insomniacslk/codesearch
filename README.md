@@ -57,6 +57,19 @@ sensitive.
 NOTE: there is no common syntax for searching, so for advanced queries you must know
 each search engine's syntax and capabilities
 
+## Tokens
+
+Backend tokens do not have to be written into the config file. `token` accepts
+a single environment variable reference, and `token_command` runs a command and
+uses its output, which lets the secret live in a password manager:
+
+```yaml
+    params:
+      token: ${GITHUB_TOKEN}
+      # ...or, taking precedence over `token`:
+      token_command: pass show github/codesearch
+```
+
 ## Backends
 
 Currently GitHub, GitLab and local search via

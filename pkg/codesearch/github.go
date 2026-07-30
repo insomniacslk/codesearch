@@ -25,9 +25,9 @@ func (g *Github) New(name string, params BackendParams) (Backend, error) {
 	if org == nil {
 		return nil, fmt.Errorf("missing 'org' parameter")
 	}
-	token := params.GetString("token")
-	if token == nil {
-		return nil, fmt.Errorf("missing 'token' parameter")
+	token, err := params.ResolveToken()
+	if err != nil {
+		return nil, err
 	}
 	apiEndpoint := params.GetString("api_endpoint")
 	if apiEndpoint == nil {
@@ -36,7 +36,7 @@ func (g *Github) New(name string, params BackendParams) (Backend, error) {
 	return &Github{
 		name:        name,
 		org:         *org,
-		token:       *token,
+		token:       token,
 		apiEndpoint: *apiEndpoint,
 	}, nil
 }

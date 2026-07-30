@@ -1,6 +1,15 @@
 package codesearch
 
-import "fmt"
+import (
+	"bytes"
+	"context"
+	"fmt"
+	"os"
+	"os/exec"
+	"regexp"
+	"strings"
+	"time"
+)
 
 type Config struct {
 	DefaultBackends []string                 `mapstructure:"default_backends"`
@@ -30,6 +39,65 @@ func (b *BackendParams) GetString(name string) *string {
 		return nil
 	}
 	return &s
+}
+
+// envRef matches a value that is exactly one environment variable reference,
+// like ${GITHUB_TOKEN} or $GITHUB_TOKEN. Only a whole-value reference is
+// expanded, so a literal token that happens to contain a $ is left alone
+// rather than being silently mangled.
+var envRef = regexp.MustCompile(`^\$\{?([A-Za-z_][A-Za-z0-9_]*)\}?$`)
+
+// tokenCommandTimeout bounds the helper, so a command that waits for input
+// cannot hang the search indefinitely.
+const tokenCommandTimeout = 30 * time.Second
+
+// ResolveToken returns the authentication token for a backend. It comes either
+// from token_command, which is run through the shell and whose standard output
+// is used, or from token, which may be a single environment variable
+// reference. Both exist so that the secret does not have to be written into a
+// config file that often ends up in a dotfiles repository.
+func (b *BackendParams) ResolveToken() (string, error) {
+	if cmdline := b.GetString("token_command"); cmdline != nil && *cmdline != "" {
+		return runTokenCommand(*cmdline)
+	}
+	token := b.GetString("token")
+	if token == nil {
+		return "", fmt.Errorf("missing 'token' or 'token_command' parameter")
+	}
+	m := envRef.FindStringSubmatch(*token)
+	if m == nil {
+		return *token, nil
+	}
+	value, ok := os.LookupEnv(m[1])
+	if !ok {
+		return "", fmt.Errorf("token refers to environment variable %q, which is not set", m[1])
+	}
+	if value == "" {
+		return "", fmt.Errorf("environment variable %q is empty", m[1])
+	}
+	return value, nil
+}
+
+func runTokenCommand(cmdline string) (string, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), tokenCommandTimeout)
+	defer cancel()
+
+	var stderr bytes.Buffer
+	cmd := exec.CommandContext(ctx, "sh", "-c", cmdline)
+	cmd.Stderr = &stderr
+	out, err := cmd.Output()
+	if err != nil {
+		if msg := strings.TrimSpace(stderr.String()); msg != "" {
+			return "", fmt.Errorf("token_command %q failed: %w: %s", cmdline, err, msg)
+		}
+		return "", fmt.Errorf("token_command %q failed: %w", cmdline, err)
+	}
+	// helpers conventionally print the secret on its own line
+	token := strings.TrimRight(string(out), "\r\n")
+	if token == "" {
+		return "", fmt.Errorf("token_command %q produced no output", cmdline)
+	}
+	return token, nil
 }
 
 type BackendType string

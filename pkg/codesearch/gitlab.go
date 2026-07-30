@@ -25,9 +25,9 @@ func (g *Gitlab) New(name string, params BackendParams) (Backend, error) {
 	if group != nil && project != nil {
 		return nil, fmt.Errorf("cannot specify both 'project' and 'group'")
 	}
-	token := params.GetString("token")
-	if token == nil {
-		return nil, fmt.Errorf("missing 'token' parameter")
+	token, err := params.ResolveToken()
+	if err != nil {
+		return nil, err
 	}
 	apiEndpoint := params.GetString("api_endpoint")
 	if apiEndpoint == nil {
@@ -35,7 +35,7 @@ func (g *Gitlab) New(name string, params BackendParams) (Backend, error) {
 	}
 	gl := Gitlab{
 		name:        name,
-		token:       *token,
+		token:       token,
 		apiEndpoint: *apiEndpoint,
 	}
 	if group != nil {

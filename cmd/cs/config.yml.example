@@ -49,6 +49,13 @@ backends:
       # https://docs.github.com/en/authentication/keeping-your-account-and-data-secure/managing-your-personal-access-tokens
       # or create directly one at https://github.com/settings/tokens/new
       # with scope repo:all and admin:org:read .
+      #
+      # To keep the secret out of this file, either set `token` to a single
+      # environment variable reference:
+      #   token: ${GITHUB_TOKEN}
+      # or set `token_command` to a command whose output is the token. It is
+      # run through the shell and takes precedence over `token`:
+      #   token_command: pass show github/codesearch
       token: your-token
       # search only code for this organization
       org: your-org-or-github-username
@@ -66,6 +73,8 @@ backends:
       api_endpoint: https://my-gitlab.example.com
       # Token used to authenticate to the search API. See Personal Access Tokens
       # at https://docs.gitlab.com/ee/user/profile/personal_access_tokens.html
+      # As above, `token` also accepts a ${ENV_VAR} reference, and
+      # `token_command` runs a command to obtain the token instead.
       token: your-token
       # Set either group or project, but not both. Leaving both empty searches
       # every project the token can see.
