@@ -1,12 +1,21 @@
 package main
 
 import (
+	"context"
 	_ "embed"
+	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
+	"io/fs"
 	"log"
 	"os"
+	"os/signal"
+	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/fatih/color"
@@ -32,9 +41,13 @@ var (
 	flagMatchFilename       string
 	flagSearchContextBefore int
 	flagSearchContextAfter  int
+	flagSearchContext       int
 	flagCaseInsensitive     bool
 	flagLimit               uint
 	flagSort                string
+	flagTimeout             time.Duration
+	flagJSON                bool
+	flagNoColor             bool
 
 	searchBackends string
 
@@ -48,53 +61,94 @@ func getConfig() *codesearch.Config {
 }
 
 func init() {
-	cobra.OnInitialize(initConfig)
-
 	rootCmd.PersistentFlags().StringVarP(&configFile, "config", "c", "", "Configuration file")
 	rootCmd.PersistentFlags().BoolVarP(&flagDebug, "debug", "d", false, "Print debug messages")
 	rootCmd.PersistentFlags().BoolVarP(&flagStats, "stats", "S", false, "Print stats")
+	rootCmd.PersistentFlags().BoolVar(&flagNoColor, "no-color", false, "Disable colours and terminal hyperlinks. They are disabled automatically when stdout is not a terminal, or when NO_COLOR is set")
 
 	searchCmd.PersistentFlags().StringVarP(&searchBackends, "backends", "b", "", "Comma-separated list of names of the backends to use. The names are defined in your configuration file. If specified, it overrides `default_backends` in the configuration file. \"all\" will use every backend")
 	searchCmd.PersistentFlags().BoolVarP(&flagSearchInFilenames, "search-in-filenames", "F", false, "Search only in file names")
-	searchCmd.PersistentFlags().StringVarP(&flagMatchFilename, "match-filename", "f", "", "Show results only from files whose names match the provided pattern")
+	searchCmd.PersistentFlags().StringVarP(&flagMatchFilename, "match-filename", "f", "", "Show results only from files whose path matches this regexp. Unanchored and case-insensitive, so \".go\" matches anywhere in the path and \"\\.go$\" only at the end")
 	searchCmd.PersistentFlags().IntVarP(&flagSearchContextBefore, "before", "B", 0, "Number of context lines to show before the result")
 	searchCmd.PersistentFlags().IntVarP(&flagSearchContextAfter, "after", "A", 0, "Number of context lines to show after the result")
+	searchCmd.PersistentFlags().IntVarP(&flagSearchContext, "context", "C", 0, "Number of context lines to show on both sides of the result. A non-zero --before or --after takes precedence over it")
 	searchCmd.PersistentFlags().BoolVarP(&flagCaseInsensitive, "case-insensitive", "i", false, "Case-insensitive search")
-	searchCmd.PersistentFlags().UintVarP(&flagLimit, "limit", "l", 0, "Limit the amount of results that are printed per backend. 0 means no limit")
+	searchCmd.PersistentFlags().UintVarP(&flagLimit, "limit", "l", 0, "Limit the amount of results that are printed per backend. 0 means no limit. Unless --sort, --match-filename or -F is in play, backends stop fetching once the limit is met, which matters on rate-limited APIs")
 	searchCmd.PersistentFlags().StringVarP(&flagSort, "sort", "s", "", "Sort the results. Possible values: \"a-z\", \"z-a\"")
+	searchCmd.PersistentFlags().DurationVarP(&flagTimeout, "timeout", "t", 0, "Maximum time to spend on each backend, e.g. \"30s\" or \"2m\". 0 means no limit")
+	searchCmd.PersistentFlags().BoolVar(&flagJSON, "json", false, "Print results as JSON on stdout instead of formatted text")
 
 	rootCmd.AddCommand(searchCmd)
 	rootCmd.AddCommand(listCmd)
 	rootCmd.AddCommand(configExampleCmd)
+
+	bindFlags()
 }
 
-func initConfig() {
-	if configFile != "" {
-		// Use config file from the flag.
-		viper.SetConfigFile(configFile)
-	} else {
-		configDir := configdir.LocalConfig(progname)
-		viper.SetConfigName("config")
-		viper.SetConfigType("yaml")
-		viper.AddConfigPath(configDir)
+// flagToConfigKey maps command line flag names to configuration keys. Viper
+// resolves a bound key to the command line value if the flag was set, then to
+// the config file value, and finally to the flag default, which gives the
+// command line precedence over the config file.
+var flagToConfigKey = map[string]string{
+	"debug":               "debug",
+	"stats":               "stats",
+	"no-color":            "no_color",
+	"limit":               "defaults.limit",
+	"sort":                "defaults.sort",
+	"before":              "defaults.before",
+	"after":               "defaults.after",
+	"context":             "defaults.context",
+	"case-insensitive":    "defaults.case_insensitive",
+	"search-in-filenames": "defaults.search_in_filenames",
+	"match-filename":      "defaults.match_filename",
+	"timeout":             "defaults.timeout",
+	"json":                "defaults.json",
+}
 
-		viper.AutomaticEnv()
+func bindFlags() {
+	for name, key := range flagToConfigKey {
+		f := rootCmd.PersistentFlags().Lookup(name)
+		if f == nil {
+			f = searchCmd.PersistentFlags().Lookup(name)
+		}
+		if f == nil {
+			panic(fmt.Sprintf("no such flag: %q", name))
+		}
+		if err := viper.BindPFlag(key, f); err != nil {
+			panic(fmt.Sprintf("failed to bind flag %q: %v", name, err))
+		}
+	}
+}
 
-		if err := viper.ReadInConfig(); err != nil {
-			if _, ok := err.(viper.ConfigFileNotFoundError); ok {
-				// TODO create new config file
-				logrus.Fatalf("Config file not found")
-			} else {
-				logrus.Fatalf("Failed to read config file: %v", err)
-			}
+// resolveFlags applies the effective value of every bound flag, so that
+// settings coming from the config file are honoured when the flag was not
+// passed on the command line.
+func resolveFlags() {
+	flagDebug = viper.GetBool("debug")
+	flagStats = viper.GetBool("stats")
+	flagLimit = uint(viper.GetInt("defaults.limit"))
+	flagSort = viper.GetString("defaults.sort")
+	flagSearchContextBefore = viper.GetInt("defaults.before")
+	flagSearchContextAfter = viper.GetInt("defaults.after")
+	// -C supplies both sides; a side that was asked for explicitly wins
+	if flagSearchContext = viper.GetInt("defaults.context"); flagSearchContext > 0 {
+		if flagSearchContextBefore == 0 {
+			flagSearchContextBefore = flagSearchContext
 		}
-		config := getConfig()
-		if err := viper.Unmarshal(&config); err != nil {
-			logrus.Fatalf("Failed to unmarshal config: %v", err)
+		if flagSearchContextAfter == 0 {
+			flagSearchContextAfter = flagSearchContext
 		}
-		if err := config.Validate(); err != nil {
-			logrus.Fatalf("Invalid config: %v", err)
-		}
+	}
+	flagCaseInsensitive = viper.GetBool("defaults.case_insensitive")
+	flagSearchInFilenames = viper.GetBool("defaults.search_in_filenames")
+	flagMatchFilename = viper.GetString("defaults.match_filename")
+	flagTimeout = viper.GetDuration("defaults.timeout")
+	flagJSON = viper.GetBool("defaults.json")
+
+	// only ever force colours off: the library has already worked out whether
+	// stdout is a terminal, and that answer must not be overridden
+	if flagNoColor = viper.GetBool("no_color"); flagNoColor {
+		color.NoColor = true
 	}
 
 	if flagDebug {
@@ -102,9 +156,64 @@ func initConfig() {
 	}
 }
 
+// configPath is where the configuration is expected, for error messages.
+func configPath() string {
+	if configFile != "" {
+		return configFile
+	}
+	return filepath.Join(configdir.LocalConfig(progname), "config.yml")
+}
+
+// requireConfig loads the configuration for the commands that need one. It is
+// deliberately not attached to every command: config-example exists to produce
+// the file in the first place, so demanding one before it can run is circular.
+func requireConfig(cmd *cobra.Command, _ []string) error {
+	// the flags parsed, so anything failing from here is not a usage problem
+	// and printing the full usage text would only bury the real message
+	cmd.SilenceUsage = true
+	return loadConfig()
+}
+
+func loadConfig() error {
+	if flagDebug {
+		logrus.SetLevel(logrus.DebugLevel)
+	}
+	if configFile != "" {
+		viper.SetConfigFile(configFile)
+	} else {
+		viper.SetConfigName("config")
+		viper.SetConfigType("yaml")
+		viper.AddConfigPath(configdir.LocalConfig(progname))
+	}
+	viper.AutomaticEnv()
+
+	if err := viper.ReadInConfig(); err != nil {
+		// SetConfigFile reports a missing file as a path error rather than as
+		// ConfigFileNotFoundError, which only covers the search-path case.
+		if _, ok := err.(viper.ConfigFileNotFoundError); ok || errors.Is(err, fs.ErrNotExist) {
+			return fmt.Errorf("no configuration file at %s\n\nCreate one with:\n    %s config-example > %s",
+				configPath(), progname, configPath())
+		}
+		return fmt.Errorf("failed to read config file %s: %w", configPath(), err)
+	}
+	logrus.Debugf("Using config file %q", viper.ConfigFileUsed())
+
+	config := getConfig()
+	if err := viper.Unmarshal(config); err != nil {
+		return fmt.Errorf("failed to parse config file %s: %w", viper.ConfigFileUsed(), err)
+	}
+	if err := config.Validate(); err != nil {
+		return fmt.Errorf("invalid config file %s: %w", viper.ConfigFileUsed(), err)
+	}
+
+	resolveFlags()
+	return nil
+}
+
 var listCmd = &cobra.Command{
-	Use:   "list",
-	Short: "List the available backends",
+	Use:               "list",
+	Short:             "List the available backends",
+	PersistentPreRunE: requireConfig,
 	Run: func(cmd *cobra.Command, args []string) {
 		config := getConfig()
 		backendNames := make([]string, 0, len(config.Backends))
@@ -122,7 +231,9 @@ var configExampleCmd = &cobra.Command{
 	Use:   "config-example",
 	Short: "Print an example config file",
 	Run: func(cmd *cobra.Command, args []string) {
-		fmt.Println(configFileExample)
+		// explicitly stdout: cobra's own Print helpers target stderr, which
+		// would break "cs config-example > config.yml"
+		fmt.Fprintln(cmd.OutOrStdout(), configFileExample)
 	},
 }
 
@@ -161,10 +272,282 @@ func repoNameFromRes(res *codesearch.Result) string {
 	return repoName
 }
 
+// splitHighlight cuts the line into the text before, inside and after the
+// match. The offsets come from the backend, so they are clamped rather than
+// trusted: an out-of-range highlight would otherwise panic in the printer,
+// after the search has already succeeded.
+func splitHighlight(line string, h [2]int) (head, match, tail string) {
+	start, end := h[0], h[1]
+	if start < 0 {
+		start = 0
+	}
+	if start > len(line) {
+		start = len(line)
+	}
+	if end < start {
+		end = start
+	}
+	if end > len(line) {
+		end = len(line)
+	}
+	return line[:start], line[start:end], line[end:]
+}
+
+// contextBlock renders the lines around a match, numbered relative to it.
+func contextBlock(res *codesearch.Result) (before, after string) {
+	for i, line := range res.Context.Before {
+		before += fmt.Sprintf("%d: %s\n", res.Lineno-(len(res.Context.Before)-i), line)
+	}
+	for i, line := range res.Context.After {
+		after += fmt.Sprintf("%d: %s\n", res.Lineno+i+1, line)
+	}
+	if after != "" {
+		after = "\n" + after
+	}
+	return before, after
+}
+
+// printResult renders one result as formatted text. A file name search has no
+// line to show, so it prints the location alone.
+func printResult(w io.Writer, res *codesearch.Result, filenamesOnly bool) {
+	location := fmt.Sprintf(
+		"%s:%s:%s (%s)",
+		res.Backend,
+		textBold.Sprint(toAnsiURL(res.RepoURL, repoNameFromRes(res))),
+		textBold.Sprint(toAnsiURL(res.FileURL, res.Path)),
+		textBold.Sprint(res.Branch),
+	)
+	if filenamesOnly {
+		fmt.Fprintf(w, "%s\n\n", location)
+		return
+	}
+	before, after := contextBlock(res)
+	head, match, tail := splitHighlight(res.Line, res.Highlight)
+	fmt.Fprintf(
+		w,
+		"%s\n\n%s%s: %s%s\n\n",
+		location,
+		before,
+		textBoldGreen.Sprint(res.Lineno),
+		head+textBoldRed.Sprint(match)+tail,
+		after,
+	)
+}
+
+// jsonOutput is the machine-readable form of a run. Backends are reported
+// alongside the results so a caller can tell a genuinely empty search from one
+// where a backend failed.
+type jsonOutput struct {
+	Results      []*codesearch.Result `json:"results"`
+	Backends     []jsonBackend        `json:"backends"`
+	TotalResults int                  `json:"total_results"`
+	DurationMS   int64                `json:"duration_ms"`
+}
+
+type jsonBackend struct {
+	Name       string `json:"name"`
+	Type       string `json:"type"`
+	Results    int    `json:"results"`
+	DurationMS int64  `json:"duration_ms"`
+	Error      string `json:"error,omitempty"`
+}
+
+func writeJSON(w io.Writer, outcomes []searchOutcome, totalResults int, total time.Duration) error {
+	out := jsonOutput{
+		Results:      []*codesearch.Result{},
+		Backends:     make([]jsonBackend, 0, len(outcomes)),
+		TotalResults: totalResults,
+		DurationMS:   total.Milliseconds(),
+	}
+	for _, o := range outcomes {
+		out.Results = append(out.Results, o.selected...)
+		b := jsonBackend{
+			Name:       o.backend.Name(),
+			Type:       o.backend.Type(),
+			Results:    len(o.selected),
+			DurationMS: o.duration.Milliseconds(),
+		}
+		if o.err != nil {
+			b.Error = o.err.Error()
+		}
+		out.Backends = append(out.Backends, b)
+	}
+	enc := json.NewEncoder(w)
+	enc.SetIndent("", "  ")
+	return enc.Encode(out)
+}
+
+// backendLimit is the result limit that can safely be pushed down into the
+// backends. Nothing downstream may reorder or discard results for this to hold:
+// --sort needs the whole set before it means anything, --match-filename can
+// reject anything a backend returns, and -F deduplicates and re-sorts by path.
+// In those cases the backend fetches everything and the truncation stays where
+// it was, at print time.
+func backendLimit() uint {
+	if flagSort != "" || flagMatchFilename != "" || flagSearchInFilenames {
+		return 0
+	}
+	return flagLimit
+}
+
+// searchOutcome is what one backend produced, including a failure. Failures
+// are carried rather than raised so that one unreachable backend does not
+// discard the results of the others.
+type searchOutcome struct {
+	backend  codesearch.Backend
+	results  codesearch.Results
+	selected []*codesearch.Result
+	duration time.Duration
+	err      error
+}
+
+// runSearches queries every backend concurrently, so the wall clock cost of a
+// search is the slowest backend rather than the sum of all of them. Outcomes
+// are returned in the order the backends were given, not the order they
+// finished, so the output stays stable across runs.
+func runSearches(ctx context.Context, backends []codesearch.Backend, searchString string, opts codesearch.SearchOptions) []searchOutcome {
+	type indexed struct {
+		idx     int
+		outcome searchOutcome
+	}
+	ch := make(chan indexed, len(backends))
+	for idx, b := range backends {
+		go func(idx int, b codesearch.Backend) {
+			start := time.Now()
+			results, err := b.Search(ctx, searchString, opts)
+			if err != nil {
+				// reported once, in the summary at the end
+				logrus.Debugf("Backend %q failed: %v", b.Name(), err)
+			}
+			ch <- indexed{idx, searchOutcome{
+				backend:  b,
+				results:  results,
+				duration: time.Since(start),
+				err:      err,
+			}}
+		}(idx, b)
+	}
+	outcomes := make([]searchOutcome, len(backends))
+	for range backends {
+		r := <-ch
+		outcomes[r.idx] = r.outcome
+	}
+	return outcomes
+}
+
+func failedSearches(outcomes []searchOutcome) []searchOutcome {
+	var failed []searchOutcome
+	for _, o := range outcomes {
+		if o.err != nil {
+			failed = append(failed, o)
+		}
+	}
+	return failed
+}
+
+// capabilityFlags names the command line flag that requests each capability,
+// so an unsupported combination can be reported in the user's terms.
+var capabilityFlags = map[codesearch.Capability]string{
+	codesearch.CapCaseInsensitive:   "--case-insensitive/-i",
+	codesearch.CapSearchInFilenames: "--search-in-filenames/-F",
+}
+
+func requestedCapabilities() []codesearch.Capability {
+	var caps []codesearch.Capability
+	if flagCaseInsensitive {
+		caps = append(caps, codesearch.CapCaseInsensitive)
+	}
+	if flagSearchInFilenames {
+		caps = append(caps, codesearch.CapSearchInFilenames)
+	}
+	return caps
+}
+
+// checkCapabilities reports every backend that cannot honour a requested
+// option. Silently ignoring these produces results that look complete but
+// quietly answer a different question.
+func checkCapabilities(backends []codesearch.Backend, caps []codesearch.Capability) error {
+	var problems []string
+	for _, b := range backends {
+		for _, c := range caps {
+			if !b.Supports(c) {
+				problems = append(problems, fmt.Sprintf(
+					"  backend %q (type %q) does not support %s, requested by %s",
+					b.Name(), b.Type(), c, capabilityFlags[c]))
+			}
+		}
+	}
+	if len(problems) == 0 {
+		return nil
+	}
+	return errors.New(strings.Join(problems, "\n"))
+}
+
+// compileFilenamePattern turns --match-filename into a matcher. The pattern is
+// an unanchored, case-insensitive regexp, so a plain substring like ".go"
+// still behaves the way the previous strings.Contains did while "\\.go$" or
+// "^cmd/" now mean what they look like. Case sensitivity can be asked for with
+// an inline (?-i).
+func compileFilenamePattern(pattern string) (*regexp.Regexp, error) {
+	if pattern == "" {
+		return nil, nil
+	}
+	re, err := regexp.Compile("(?i)" + pattern)
+	if err != nil {
+		return nil, fmt.Errorf("invalid --match-filename pattern %q: %w", pattern, err)
+	}
+	return re, nil
+}
+
+// selectResults picks the content matches to print, applying the file name
+// filter first so that the limit counts results that are actually shown
+// rather than results merely examined.
+func selectResults(results codesearch.Results, limit uint, matchFilename *regexp.Regexp) []*codesearch.Result {
+	var out []*codesearch.Result
+	for i := range results {
+		res := &results[i]
+		if res.IsFilename {
+			continue
+		}
+		if matchFilename != nil && !matchFilename.MatchString(res.Path) {
+			continue
+		}
+		if limit > 0 && uint(len(out)) >= limit {
+			break
+		}
+		out = append(out, res)
+	}
+	return out
+}
+
+// selectFilenames picks the unique file names to print for a -F search. The
+// backend has already matched the pattern against the file names, so nothing
+// is re-tested here: a substring check would throw away every hit from a
+// pattern that is not a literal, which is exactly what csearch searches with.
+// The limit counts distinct file names, since that is what gets printed.
+func selectFilenames(results codesearch.Results, limit uint) []*codesearch.Result {
+	seen := make(map[string]struct{}, len(results))
+	var out []*codesearch.Result
+	for i := range results {
+		res := &results[i]
+		if _, ok := seen[res.Path]; ok {
+			continue
+		}
+		if limit > 0 && uint(len(out)) >= limit {
+			break
+		}
+		seen[res.Path] = struct{}{}
+		out = append(out, res)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Path < out[j].Path })
+	return out
+}
+
 var searchCmd = &cobra.Command{
-	Use:   "search",
-	Short: "Search code in the specified backends",
-	Args:  cobra.MinimumNArgs(1),
+	Use:               "search",
+	Short:             "Search code in the specified backends",
+	Args:              cobra.MinimumNArgs(1),
+	PersistentPreRunE: requireConfig,
 	Run: func(cmd *cobra.Command, args []string) {
 		config := getConfig()
 
@@ -195,6 +578,10 @@ var searchCmd = &cobra.Command{
 		if sorter == nil {
 			log.Fatalf("Invalid value for --sort")
 		}
+		matchFilename, err := compileFilenamePattern(flagMatchFilename)
+		if err != nil {
+			logrus.Fatal(err)
+		}
 
 		searchString := strings.Join(args, " ")
 		fmt.Fprintf(os.Stderr, "Searching %q on %q\n", searchString, backendNames)
@@ -220,137 +607,85 @@ var searchCmd = &cobra.Command{
 		if len(backends) == 0 {
 			logrus.Fatal("No backends specified")
 		}
-		type stat struct {
-			name     string
-			duration time.Duration
-			results  int
+		if err := checkCapabilities(backends, requestedCapabilities()); err != nil {
+			// printed rather than logged so the per-backend list stays readable
+			fmt.Fprintf(os.Stderr, "Requested options are not supported:\n%v\n", err)
+			os.Exit(1)
 		}
-		stats := make([]stat, 0, len(backends))
+		// a cancelled run must abandon in-flight requests rather than wait
+		// for them, so Ctrl-C is honoured mid-search
+		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+		defer stop()
+
 		searchStart := time.Now()
+		outcomes := runSearches(ctx, backends, searchString, codesearch.SearchOptions{
+			LinesBefore:       flagSearchContextBefore,
+			LinesAfter:        flagSearchContextAfter,
+			CaseInsensitive:   flagCaseInsensitive,
+			SearchInFilenames: flagSearchInFilenames,
+			Timeout:           flagTimeout,
+			Limit:             backendLimit(),
+		})
 		totalResults := 0
-		for _, b := range backends {
-			start := time.Now()
-			results, err := b.Search(
-				searchString,
-				codesearch.WithLinesBefore(flagSearchContextBefore),
-				codesearch.WithLinesAfter(flagSearchContextAfter),
-				codesearch.WithCaseInsensitive(flagCaseInsensitive),
-				codesearch.WithSearchInFilenames(flagSearchInFilenames),
-			)
-			if err != nil {
-				logrus.Fatalf("Failed to search with backend %q: %v", b.Name(), err)
-			}
-			st := stat{
-				name:     b.Name(),
-				duration: time.Since(start),
+		for i := range outcomes {
+			o := &outcomes[i]
+			if o.err != nil {
+				continue
 			}
 			// sort the results, if requested
-			results = sorter(results)
-			numResults := 0
-			fileNamesMap := make(map[string]*codesearch.Result)
-			for idx, res := range results {
-				repoName := repoNameFromRes(&res)
-				if flagLimit > 0 && uint(idx) >= flagLimit {
-					break
-				}
-				if flagSearchInFilenames {
-					// we are searching the pattern in the file name. Collect
-					// all of the first in a map to remove duplicates, then
-					// print them out later in this function
-					if strings.Contains(strings.ToLower(res.Path), strings.ToLower(searchString)) {
-						fileNamesMap[res.Path] = &res
-					}
-				} else {
-					// we are searching the pattern in the file content
-					// get context lines
-					var before, after string
-					for idx, line := range res.Context.Before {
-						before += fmt.Sprintf("%d: %s\n", res.Lineno-(len(res.Context.Before)-idx), line)
-					}
-					for idx, line := range res.Context.After {
-						after += fmt.Sprintf("%d: %s\n", res.Lineno+idx+1, line)
-					}
-					if len(res.Context.After) > 0 {
-						after = "\n" + after
-					}
-					// get start and end of highlight
-					start, end := res.Highlight[0], res.Highlight[1]
-					if flagMatchFilename != "" {
-						if strings.Contains(strings.ToLower(res.Path), strings.ToLower(flagMatchFilename)) {
-							// only show the result if the file name matches the
-							// file pattern
-							if !res.IsFilename {
-								fmt.Printf(
-									"%s:%s:%s (%s)\n\n%s%s: %s%s\n\n",
-									res.Backend,
-									textBold.Sprint(toAnsiURL(res.RepoURL, repoName)),
-									textBold.Sprint(toAnsiURL(res.FileURL, res.Path)),
-									textBold.Sprint(res.Branch),
-									before,
-									textBoldGreen.Sprint(res.Lineno),
-									res.Line[:start]+textBoldRed.Sprint(res.Line[start:end])+res.Line[end:],
-									after,
-								)
-								numResults++
-							}
-						}
-					} else {
-						// no file name pattern specified, so show all the
-						// results
-						if res.IsFilename {
-							continue
-						}
-						fmt.Printf(
-							"%s:%s:%s (%s)\n\n%s%s: %s%s\n\n",
-							res.Backend,
-							textBold.Sprint(toAnsiURL(res.RepoURL, repoName)),
-							textBold.Sprint(toAnsiURL(res.FileURL, res.Path)),
-							textBold.Sprint(res.Branch),
-							before,
-							textBoldGreen.Sprint(res.Lineno),
-							res.Line[:start]+textBoldRed.Sprint(res.Line[start:end])+res.Line[end:],
-							after,
-						)
-						numResults++
-					}
-				}
-			}
+			results := sorter(o.results)
 			if flagSearchInFilenames {
-				// and now print the unique file names, if flagSearchInFilenames was
-				// requested
-				fileNames := make([]string, 0, len(fileNamesMap))
-				for name := range fileNamesMap {
-					fileNames = append(fileNames, name)
-				}
-				sort.Strings(fileNames)
-				for _, name := range fileNames {
-					res := fileNamesMap[name]
-					repoName := repoNameFromRes(res)
-					fmt.Printf(
-						"%s:%s:%s (%s)\n\n",
-						b.Name(),
-						textBold.Sprint(toAnsiURL(res.RepoURL, repoName)),
-						textBold.Sprint(toAnsiURL(res.FileURL, res.Path)),
-						textBold.Sprint(res.Branch),
-					)
-				}
-				numResults = len(fileNames)
+				o.selected = selectFilenames(results, flagLimit)
+			} else {
+				o.selected = selectResults(results, flagLimit, matchFilename)
 			}
-			st.results = numResults
-			stats = append(stats, st)
-			totalResults += numResults
+			totalResults += len(o.selected)
 		}
 		totalTime := time.Since(searchStart)
+
+		if flagJSON {
+			if err := writeJSON(os.Stdout, outcomes, totalResults, totalTime); err != nil {
+				logrus.Fatalf("Failed to write JSON output: %v", err)
+			}
+		} else {
+			for _, o := range outcomes {
+				for _, res := range o.selected {
+					printResult(os.Stdout, res, flagSearchInFilenames)
+				}
+			}
+		}
 		if flagStats {
-			for _, st := range stats {
-				fmt.Fprintf(os.Stderr, "Got %d results on %q in %s\n", st.results, st.name, st.duration)
+			for _, o := range outcomes {
+				if o.err != nil {
+					fmt.Fprintf(os.Stderr, "Failed on %q after %s\n", o.backend.Name(), o.duration)
+					continue
+				}
+				fmt.Fprintf(os.Stderr, "Got %d results on %q in %s\n", len(o.selected), o.backend.Name(), o.duration)
 			}
 		}
 		fmt.Fprintf(os.Stderr, "Got %d total results in %s\n", totalResults, totalTime)
+
+		// Results from the backends that did work are already printed, so a
+		// failure elsewhere is reported at the end and reflected in the exit
+		// status rather than discarding everything.
+		if failed := failedSearches(outcomes); len(failed) > 0 {
+			fmt.Fprintf(os.Stderr, "\n%d of %d backends failed:\n", len(failed), len(outcomes))
+			for _, o := range failed {
+				fmt.Fprintf(os.Stderr, "  %s: %v\n", o.backend.Name(), o.err)
+			}
+			os.Exit(1)
+		}
 	},
 }
 
+// toAnsiURL wraps text in an OSC 8 terminal hyperlink. The escapes are
+// invisible in a terminal that understands them, but land verbatim in the
+// output when it is redirected to a file or a pipe, so they follow the same
+// switch as the colours: NO_COLOR, --no-color, or stdout not being a terminal.
 func toAnsiURL(url, text string) string {
+	if color.NoColor {
+		return text
+	}
 	return fmt.Sprintf("\033]8;;%s\033\\%s\033]8;;\033\\", url, text)
 }
 
@@ -364,6 +699,7 @@ var rootCmd = &cobra.Command{
 
 func main() {
 	if err := rootCmd.Execute(); err != nil {
-		logrus.Fatalf("Failed to execute command: %v", err)
+		// cobra has already printed the message
+		os.Exit(1)
 	}
 }

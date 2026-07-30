@@ -33,7 +33,15 @@ Feature matrix:
 | Show context lines       | ✅       | max 3  | ✅      |
 | Full file fetching       | ✅       | ❌     | ✅      |
 | Search by file name      | ✅       | ✅     | ✅      |
-| Search in file names     | ❌       | ✅     | ✅      |
+| Search in file names     | ❌       | ❌     | ✅      |
+
+Options that a backend cannot honour are rejected rather than ignored: asking
+for `-i` or `-F` on a backend that does not implement them fails with a message
+naming the backend and the flag, instead of silently returning results for a
+different query.
+
+Note that GitLab still reports matches that occur in a file name as part of an
+ordinary search, it just has no file-name-only mode to select with `-F`.
 
 Other general features:
 * [ ] Common syntax for all backends
@@ -41,8 +49,26 @@ Other general features:
 * [ ] Custom colour scheme
 
 
+`--match-filename`/`-f` filters results by path using an unanchored,
+case-insensitive regexp, so `-f .go` matches anywhere in the path while
+`-f '\.go$'` only matches the extension. Add an inline `(?-i)` to make it case
+sensitive.
+
 NOTE: there is no common syntax for searching, so for advanced queries you must know
 each search engine's syntax and capabilities
+
+## Tokens
+
+Backend tokens do not have to be written into the config file. `token` accepts
+a single environment variable reference, and `token_command` runs a command and
+uses its output, which lets the secret live in a password manager:
+
+```yaml
+    params:
+      token: ${GITHUB_TOKEN}
+      # ...or, taking precedence over `token`:
+      token_command: pass show github/codesearch
+```
 
 ## Backends
 

@@ -2,7 +2,10 @@ package codesearch
 
 import (
 	"bytes"
+	"context"
+	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	goregexp "regexp"
@@ -11,18 +14,13 @@ import (
 
 	"github.com/google/codesearch/index"
 	"github.com/google/codesearch/regexp"
-	"github.com/mitchellh/go-homedir"
 	"github.com/sirupsen/logrus"
 )
 
 // Csearch implements the Backend interface
 type Csearch struct {
-	name              string
-	indexFile         string
-	linesBefore       int
-	linesAfter        int
-	caseInsensitive   bool
-	searchInFilenames bool
+	name      string
+	indexFile string
 }
 
 func (g *Csearch) New(name string, params BackendParams) (Backend, error) {
@@ -30,16 +28,32 @@ func (g *Csearch) New(name string, params BackendParams) (Backend, error) {
 	if indexFile == nil {
 		return nil, fmt.Errorf("missing 'index_file' parameter")
 	}
-	var err error
-	*indexFile, err = homedir.Expand(*indexFile)
+	expanded, err := expandHome(*indexFile)
 	if err != nil {
-		return nil, fmt.Errorf("failed to expand path %q: %v", indexFile, err)
+		return nil, fmt.Errorf("failed to expand path %q: %w", *indexFile, err)
 	}
 	gl := Csearch{
 		name:      name,
-		indexFile: *indexFile,
+		indexFile: expanded,
 	}
 	return &gl, nil
+}
+
+// expandHome resolves a leading ~ against the current user's home directory.
+// os.UserHomeDir does not do this itself, and ~user/ is not supported: there
+// is no portable way to look up another user's home directory.
+func expandHome(path string) (string, error) {
+	if path == "" || path[0] != '~' {
+		return path, nil
+	}
+	if len(path) > 1 && path[1] != '/' && path[1] != '\\' {
+		return "", errors.New("cannot expand user-specific home directory")
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", fmt.Errorf("failed to look up home directory: %w", err)
+	}
+	return filepath.Join(home, path[1:]), nil
 }
 
 func (g *Csearch) Name() string {
@@ -50,40 +64,90 @@ func (g *Csearch) Type() string {
 	return BackendTypeCsearch
 }
 
-func (g *Csearch) SetCaseInsensitive(v bool) {
-	g.caseInsensitive = v
+func (g *Csearch) Supports(c Capability) bool {
+	switch c {
+	case CapCaseInsensitive, CapSearchInFilenames:
+		return true
+	}
+	return false
 }
 
-func (g *Csearch) SetLinesBefore(n int) {
-	g.linesBefore = n
+func clamp(v, lo, hi int) int {
+	if v < lo {
+		return lo
+	}
+	if v > hi {
+		return hi
+	}
+	return v
 }
 
-func (g *Csearch) SetLinesAfter(n int) {
-	g.linesAfter = n
+// contextLines returns the lines surrounding the match at lineno, which is
+// 1-based. Every index is clamped to the file, so a match near either end of
+// the file yields a shorter context rather than going out of range.
+func contextLines(lines []string, lineno, before, after int) ([]string, []string) {
+	n := len(lines)
+	idx := lineno - 1
+	beforeStart := clamp(idx-before, 0, n)
+	beforeEnd := clamp(idx, beforeStart, n)
+	afterStart := clamp(idx+1, 0, n)
+	afterEnd := clamp(idx+1+after, afterStart, n)
+	return lines[beforeStart:beforeEnd], lines[afterStart:afterEnd]
 }
 
-func (g *Csearch) SetSearchInFilenames(v bool) {
-	g.searchInFilenames = v
+// hasPathPrefix reports whether s is prefix or sits underneath it, comparing
+// whole path components so that "/src/repo" does not match "/src/repo2".
+func hasPathPrefix(s, prefix string) bool {
+	prefix = strings.TrimRight(prefix, "/")
+	if prefix == "" {
+		return false
+	}
+	return s == prefix || strings.HasPrefix(s, prefix+"/")
 }
 
 func removePathPrefix(s, prefix string) string {
-	if strings.HasPrefix(s, prefix) {
-		s = s[len(prefix):]
-		s = strings.TrimLeft(s, "/")
+	if !hasPathPrefix(s, prefix) {
+		return s
 	}
-	return s
+	return strings.TrimPrefix(strings.TrimPrefix(s, strings.TrimRight(prefix, "/")), "/")
 }
 
-func (g *Csearch) Search(searchString string, opts ...Opt) (Results, error) {
-	for _, opt := range opts {
-		opt(g)
+// indexMagic is the header cindex writes at the start of an index file.
+const indexMagic = "csearch index 1\n"
+
+// openIndex validates the index before handing it to index.Open, which calls
+// log.Fatal on anything it does not like and so would take the whole process
+// down with "corrupt index" even when the file is simply not there.
+func openIndex(path string) (*index.Index, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil, fmt.Errorf("index %q does not exist, create it with cindex", path)
+		}
+		return nil, fmt.Errorf("cannot read index %q: %w", path, err)
 	}
+	defer f.Close()
+
+	header := make([]byte, len(indexMagic))
+	if _, err := io.ReadFull(f, header); err != nil || string(header) != indexMagic {
+		return nil, fmt.Errorf("%q is not a codesearch index, recreate it with cindex", path)
+	}
+	return index.Open(path), nil
+}
+
+func (g *Csearch) Search(ctx context.Context, searchString string, opts SearchOptions) (Results, error) {
+	ctx, cancel := searchContext(ctx, opts.Timeout)
+	defer cancel()
+
 	pattern := "(?m)" + searchString
-	if g.caseInsensitive {
+	if opts.CaseInsensitive {
 		pattern = "(?i)" + pattern
 	}
-	ix := index.Open(g.indexFile)
-	if g.searchInFilenames {
+	ix, err := openIndex(g.indexFile)
+	if err != nil {
+		return nil, err
+	}
+	if opts.SearchInFilenames {
 		// get all the file names instead of doing a search on the cindex
 		logrus.Debugf("Searching in file names")
 		re, err := goregexp.Compile(pattern)
@@ -94,8 +158,18 @@ func (g *Csearch) Search(searchString string, opts ...Opt) (Results, error) {
 		for _, indexedPath := range ix.Paths() {
 			files := make(map[string]struct{})
 			err = filepath.Walk(indexedPath, func(path string, info os.FileInfo, err error) error {
-				shortName := removePathPrefix(info.Name(), path)
-				if err == nil && re.MatchString(shortName) {
+				// info is nil whenever err is set, which happens for
+				// directories that cannot be read. Skip them rather than
+				// aborting the whole walk.
+				if err != nil {
+					logrus.Debugf("Skipping %q: %v", path, err)
+					return nil
+				}
+				if info.IsDir() {
+					return nil
+				}
+				shortName := removePathPrefix(path, indexedPath)
+				if re.MatchString(shortName) {
 					logrus.Debugf("Adding file %s", path)
 					files[path] = struct{}{}
 				}
@@ -135,16 +209,22 @@ func (g *Csearch) Search(searchString string, opts ...Opt) (Results, error) {
 	}
 	q := index.RegexpQuery(re.Syntax)
 	post := ix.PostingQuery(q)
-	return g.toResult(pattern, ix, grep, post)
+	return g.toResult(ctx, pattern, ix, grep, post, opts)
 }
 
-func (g *Csearch) toResult(pattern string, ix *index.Index, grep regexp.Grep, post []uint32) (Results, error) {
+func (g *Csearch) toResult(ctx context.Context, pattern string, ix *index.Index, grep regexp.Grep, post []uint32, opts SearchOptions) (Results, error) {
 	var results Results
 	re, err := goregexp.Compile(pattern)
 	if err != nil {
 		return nil, fmt.Errorf("failed to compile pattern for indexing: %w", err)
 	}
 	for _, fileid := range post {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		if opts.Limit > 0 && uint(len(results)) >= opts.Limit {
+			break
+		}
 		name := ix.Name(fileid)
 		logrus.Debugf("fileid=%d name=%q", fileid, name)
 		grep.File(name)
@@ -180,34 +260,25 @@ func (g *Csearch) toResult(pattern string, ix *index.Index, grep regexp.Grep, po
 			if newlineIdx != -1 {
 				line = line[:newlineIdx]
 			}
-			// find indexed path
+			// find the indexed path this file sits under, preferring the
+			// longest match so nested indexed roots resolve to the deeper one
 			var indexedPath string
 			for _, p := range ix.Paths() {
-				if strings.HasPrefix(name, p) {
+				if hasPathPrefix(name, p) && len(p) > len(indexedPath) {
 					indexedPath = p
-					break
 				}
 			}
 			if indexedPath == "" {
 				return nil, fmt.Errorf("no indexed path found for %q", name)
 			}
 			var before, after []string
-			if g.linesBefore > 0 || g.linesAfter > 0 {
+			if opts.LinesBefore > 0 || opts.LinesAfter > 0 {
 				fullText, err := os.ReadFile(name)
 				if err != nil {
 					return nil, fmt.Errorf("failed to read file %q: %w", name, err)
 				}
 				lines := strings.Split(string(fullText), "\n")
-				indexBefore := lineno - g.linesBefore
-				if indexBefore < 0 {
-					indexBefore = 0
-				}
-				indexAfter := lineno + g.linesAfter
-				if indexAfter > len(lines) {
-					indexAfter = len(lines)
-				}
-				before = lines[indexBefore:lineno]
-				after = lines[lineno+1 : indexAfter+1]
+				before, after = contextLines(lines, lineno, opts.LinesBefore, opts.LinesAfter)
 			}
 			// find start and end offsets for highlight
 			offsets := re.FindAllStringIndex(line, -1)

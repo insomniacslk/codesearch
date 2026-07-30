@@ -3,6 +3,36 @@
 # all the available backends.
 default_backends: [github_yourname]
 
+# Print debug messages and per-backend statistics. Equivalent to --debug and
+# --stats.
+debug: false
+stats: false
+
+# Default values for the search options. Anything passed on the command line
+# takes precedence over these.
+defaults:
+  # Maximum number of results printed per backend. 0 means no limit. Same as
+  # --limit.
+  limit: 0
+  # Sort order for the results, "a-z" or "z-a". Empty means backend order. Same
+  # as --sort.
+  sort: ""
+  # Number of context lines shown before and after each result. Same as
+  # --before and --after. `context` sets both at once, like --context, and a
+  # non-zero `before` or `after` takes precedence over it.
+  before: 0
+  after: 0
+  context: 0
+  # Same as --case-insensitive, --search-in-filenames and --match-filename.
+  case_insensitive: false
+  search_in_filenames: false
+  match_filename: ""
+  # Maximum time to spend on each backend, e.g. "30s". 0 means no limit. Same
+  # as --timeout.
+  timeout: 0
+  # Print results as JSON on stdout instead of formatted text. Same as --json.
+  json: false
+
 # List of all the configured backends
 backends:
 
@@ -19,6 +49,13 @@ backends:
       # https://docs.github.com/en/authentication/keeping-your-account-and-data-secure/managing-your-personal-access-tokens
       # or create directly one at https://github.com/settings/tokens/new
       # with scope repo:all and admin:org:read .
+      #
+      # To keep the secret out of this file, either set `token` to a single
+      # environment variable reference:
+      #   token: ${GITHUB_TOKEN}
+      # or set `token_command` to a command whose output is the token. It is
+      # run through the shell and takes precedence over `token`:
+      #   token_command: pass show github/codesearch
       token: your-token
       # search only code for this organization
       org: your-org-or-github-username
@@ -36,10 +73,16 @@ backends:
       api_endpoint: https://my-gitlab.example.com
       # Token used to authenticate to the search API. See Personal Access Tokens
       # at https://docs.gitlab.com/ee/user/profile/personal_access_tokens.html
+      # As above, `token` also accepts a ${ENV_VAR} reference, and
+      # `token_command` runs a command to obtain the token instead.
       token: your-token
-      # set either group or project, but not both
+      # Set either group or project, but not both. Leaving both empty searches
+      # every project the token can see.
+      # Each one is a numeric ID or a full path as it appears in the URL, not
+      # the display name, so a nested group is written "top-level/subgroup"
+      # and a project is written "namespace/project".
       group:
-      project: your-project
+      project: your-namespace/your-project
 
   # Configuration for the `csearch` backend. `csearch` is based on the
   # google/codesearch library to search on a pre-built index of local files.

@@ -1,25 +1,22 @@
 package codesearch
 
 import (
+	"context"
 	"fmt"
 	"net/url"
 	"strings"
 
 	"github.com/sirupsen/logrus"
-	gitlab "github.com/xanzy/go-gitlab"
+	gitlab "gitlab.com/gitlab-org/api/client-go"
 )
 
 // Gitlab implements the Backend interface
 type Gitlab struct {
-	name              string
-	apiEndpoint       string
-	token             string
-	group             string
-	project           string
-	linesBefore       int
-	linesAfter        int
-	caseInsensitive   bool
-	searchInFilenames bool
+	name        string
+	apiEndpoint string
+	token       string
+	group       string
+	project     string
 }
 
 func (g *Gitlab) New(name string, params BackendParams) (Backend, error) {
@@ -28,9 +25,9 @@ func (g *Gitlab) New(name string, params BackendParams) (Backend, error) {
 	if group != nil && project != nil {
 		return nil, fmt.Errorf("cannot specify both 'project' and 'group'")
 	}
-	token := params.GetString("token")
-	if token == nil {
-		return nil, fmt.Errorf("missing 'token' parameter")
+	token, err := params.ResolveToken()
+	if err != nil {
+		return nil, err
 	}
 	apiEndpoint := params.GetString("api_endpoint")
 	if apiEndpoint == nil {
@@ -38,7 +35,7 @@ func (g *Gitlab) New(name string, params BackendParams) (Backend, error) {
 	}
 	gl := Gitlab{
 		name:        name,
-		token:       *token,
+		token:       token,
 		apiEndpoint: *apiEndpoint,
 	}
 	if group != nil {
@@ -66,26 +63,15 @@ func (g *Gitlab) Type() string {
 	return BackendTypeGitlab
 }
 
-func (g *Gitlab) SetCaseInsensitive(v bool) {
-	g.caseInsensitive = v
+// Supports implements Backend. GitLab's advanced search offers no
+// case-sensitivity switch, and the backend does not implement a
+// file-name-only mode; file name matches surface on their own as part of a
+// normal search and are reported with Result.IsFilename set.
+func (g *Gitlab) Supports(Capability) bool {
+	return false
 }
 
-func (g *Gitlab) SetLinesBefore(n int) {
-	g.linesBefore = n
-}
-
-func (g *Gitlab) SetLinesAfter(n int) {
-	g.linesAfter = n
-}
-
-func (g *Gitlab) SetSearchInFilenames(v bool) {
-	g.searchInFilenames = v
-}
-
-func (g *Gitlab) Search(searchString string, opts ...Opt) (Results, error) {
-	for _, opt := range opts {
-		opt(g)
-	}
+func (g *Gitlab) Search(ctx context.Context, searchString string, opts SearchOptions) (Results, error) {
 	u, err := url.Parse(g.apiEndpoint)
 	if err != nil {
 		return nil, fmt.Errorf("failed to parse Gitlab API endpoint: %w", err)
@@ -103,90 +89,59 @@ func (g *Gitlab) Search(searchString string, opts ...Opt) (Results, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to set up Gitlab client: %w", err)
 	}
+	ctx, cancel := searchContext(ctx, opts.Timeout)
+	defer cancel()
+	withCtx := gitlab.WithContext(ctx)
+	// The search endpoints take an ID or a URL-encoded path, so the configured
+	// group or project is passed straight through. Resolving it to a numeric
+	// ID first would mean listing every group or project the token can see.
 	var (
-		blobs []*gitlab.Blob
+		scope  string
+		search func(*gitlab.SearchOptions) ([]*gitlab.Blob, *gitlab.Response, error)
 	)
-	if g.group != "" {
-		// get group ID
-		// XXX Should this request be paginated as well?
-		groups, response, err := client.Groups.ListGroups(&gitlab.ListGroupsOptions{})
-		logrus.Debugf("Search.ListGroups response: %+v", response)
-		if err != nil {
-			return nil, fmt.Errorf("failed to get group list: %w", err)
+	switch {
+	case g.group != "":
+		scope = fmt.Sprintf("group %q", g.group)
+		search = func(sopts *gitlab.SearchOptions) ([]*gitlab.Blob, *gitlab.Response, error) {
+			return client.Search.BlobsByGroup(g.group, searchString, sopts, withCtx)
 		}
-		groupID := -1
-		for _, group := range groups {
-			if group.Name == g.group {
-				groupID = group.ID
-				break
-			}
+	case g.project != "":
+		scope = fmt.Sprintf("project %q", g.project)
+		search = func(sopts *gitlab.SearchOptions) ([]*gitlab.Blob, *gitlab.Response, error) {
+			return client.Search.BlobsByProject(g.project, searchString, sopts, withCtx)
 		}
-		if groupID == -1 {
-			return nil, fmt.Errorf("group %q not found", g.group)
-		}
-		sopts := gitlab.SearchOptions{ListOptions: gitlab.ListOptions{PerPage: 100}}
-		for {
-			someBlobs, response, err := client.Search.BlobsByGroup(groupID, searchString, &sopts)
-			logrus.Debugf("Search.BlobsByGroup response: %+v", response)
-			if err != nil {
-				return nil, fmt.Errorf("failed to search blobs by project: %w", err)
-			}
-			sopts.Page = response.NextPage
-			blobs = append(blobs, someBlobs...)
-			if response.NextPage == 0 {
-				break
-			}
-		}
-	} else if g.project != "" {
-		// get project ID
-		// XXX Should this request be paginated as well?
-		projects, response, err := client.Projects.ListProjects(&gitlab.ListProjectsOptions{})
-		logrus.Debugf("Search.ListProjects response: %+v", response)
-		if err != nil {
-			return nil, fmt.Errorf("failed to get project list: %w", err)
-		}
-		projectID := 0
-		for _, proj := range projects {
-			if proj.Name == g.project {
-				projectID = proj.ID
-				break
-			}
-		}
-		sopts := gitlab.SearchOptions{ListOptions: gitlab.ListOptions{PerPage: 100}}
-		for {
-			someBlobs, response, err := client.Search.BlobsByProject(projectID, searchString, &sopts)
-			logrus.Debugf("Search.BlobsByProject response: %+v", response)
-			if err != nil {
-				return nil, fmt.Errorf("failed to search blobs by group: %w", err)
-			}
-			sopts.Page = response.NextPage
-			blobs = append(blobs, someBlobs...)
-			if response.NextPage == 0 {
-				break
-			}
-		}
-	} else {
-		sopts := gitlab.SearchOptions{ListOptions: gitlab.ListOptions{PerPage: 100}}
-		for {
-			someBlobs, response, err := client.Search.Blobs(searchString, &sopts)
-			logrus.Debugf("Search.Blobs response: %+v", response)
-			if err != nil {
-				return nil, fmt.Errorf("failed to search blobs: %w", err)
-			}
-			sopts.Page = response.NextPage
-			blobs = append(blobs, someBlobs...)
-			if response.NextPage == 0 {
-				break
-			}
+	default:
+		scope = "all projects"
+		search = func(sopts *gitlab.SearchOptions) ([]*gitlab.Blob, *gitlab.Response, error) {
+			return client.Search.Blobs(searchString, sopts, withCtx)
 		}
 	}
-	return g.toResult(client, searchString, blobs)
+
+	var blobs []*gitlab.Blob
+	sopts := gitlab.SearchOptions{ListOptions: gitlab.ListOptions{PerPage: 100}}
+	for {
+		someBlobs, response, err := search(&sopts)
+		logrus.Debugf("Search response: %+v", response)
+		if err != nil {
+			return nil, fmt.Errorf("failed to search blobs in %s: %w", scope, err)
+		}
+		blobs = append(blobs, someBlobs...)
+		if response.NextPage == 0 {
+			break
+		}
+		if opts.Limit > 0 && uint(len(blobs)) >= opts.Limit {
+			logrus.Debugf("Stopping after %d blobs, enough for a limit of %d", len(blobs), opts.Limit)
+			break
+		}
+		sopts.Page = response.NextPage
+	}
+	return g.toResult(client, withCtx, searchString, blobs, opts)
 }
 
-func (g *Gitlab) toResult(client *gitlab.Client, searchString string, blobs []*gitlab.Blob) (Results, error) {
+func (g *Gitlab) toResult(client *gitlab.Client, withCtx gitlab.RequestOptionFunc, searchString string, blobs []*gitlab.Blob, opts SearchOptions) (Results, error) {
 	var (
 		results  Results
-		projects = make(map[int]*gitlab.Project, 0)
+		projects = make(map[int64]*gitlab.Project)
 	)
 	for _, blob := range blobs {
 		logrus.Debugf("Result:")
@@ -200,10 +155,10 @@ func (g *Gitlab) toResult(client *gitlab.Client, searchString string, blobs []*g
 		logrus.Debugf("  ProjectID: %d", blob.ProjectID)
 
 		if _, ok := projects[blob.ProjectID]; !ok {
-			project, response, err := client.Projects.GetProject(blob.ProjectID, &gitlab.GetProjectOptions{})
+			project, response, err := client.Projects.GetProject(blob.ProjectID, &gitlab.GetProjectOptions{}, withCtx)
 			logrus.Debugf("Projects.GetProject response: %+v", response)
 			if err != nil {
-				return nil, fmt.Errorf("failed to get project with ID %q: %w", blob.ProjectID, err)
+				return nil, fmt.Errorf("failed to get project with ID %d: %w", blob.ProjectID, err)
 			}
 			projects[blob.ProjectID] = project
 		}
@@ -238,24 +193,24 @@ func (g *Gitlab) toResult(client *gitlab.Client, searchString string, blobs []*g
 			end = start + len(searchString)
 			// TODO fetch entire file content if the requested context is longer
 			// than the available one
-			beforeIdx := linenoInBlob - g.linesBefore
+			beforeIdx := linenoInBlob - opts.LinesBefore
 			if beforeIdx < 0 {
 				beforeIdx = 0
 			}
-			afterIdx := linenoInBlob + g.linesAfter + 1
+			afterIdx := linenoInBlob + opts.LinesAfter + 1
 			if afterIdx > len(lines) {
 				afterIdx = len(lines)
 			}
-			result.Lineno = blob.Startline
+			result.Lineno = int(blob.Startline)
 			result.Context = ResultContext{
 				Before: lines[beforeIdx:linenoInBlob],
 				After:  lines[linenoInBlob+1 : afterIdx],
 			}
 			result.Highlight = [2]int{start, end}
 			result.Line = line
-			result.Lineno = blob.Startline + linenoInBlob
+			result.Lineno = int(blob.Startline) + linenoInBlob
 			// add line fragment to URL
-			result.FileURL = fmt.Sprintf("%s/-/blob/%s/%s#L%d", project.WebURL, project.DefaultBranch, blob.Path, blob.Startline+linenoInBlob)
+			result.FileURL = fmt.Sprintf("%s/-/blob/%s/%s#L%d", project.WebURL, project.DefaultBranch, blob.Path, int(blob.Startline)+linenoInBlob)
 		}
 		results = append(results, result)
 	}
