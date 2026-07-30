@@ -33,7 +33,7 @@ func (g *Csearch) New(name string, params BackendParams) (Backend, error) {
 	var err error
 	*indexFile, err = homedir.Expand(*indexFile)
 	if err != nil {
-		return nil, fmt.Errorf("failed to expand path %q: %v", indexFile, err)
+		return nil, fmt.Errorf("failed to expand path %q: %w", *indexFile, err)
 	}
 	gl := Csearch{
 		name:      name,
@@ -64,6 +64,28 @@ func (g *Csearch) SetLinesAfter(n int) {
 
 func (g *Csearch) SetSearchInFilenames(v bool) {
 	g.searchInFilenames = v
+}
+
+func clamp(v, lo, hi int) int {
+	if v < lo {
+		return lo
+	}
+	if v > hi {
+		return hi
+	}
+	return v
+}
+
+// contextLines returns the lines surrounding the match at lineno. Every index
+// is clamped to the file, so a match near either end of the file yields a
+// shorter context rather than going out of range.
+func contextLines(lines []string, lineno, before, after int) ([]string, []string) {
+	n := len(lines)
+	beforeStart := clamp(lineno-before, 0, n)
+	beforeEnd := clamp(lineno, beforeStart, n)
+	afterStart := clamp(lineno+1, 0, n)
+	afterEnd := clamp(lineno+1+after, afterStart, n)
+	return lines[beforeStart:beforeEnd], lines[afterStart:afterEnd]
 }
 
 func removePathPrefix(s, prefix string) string {
@@ -198,16 +220,7 @@ func (g *Csearch) toResult(pattern string, ix *index.Index, grep regexp.Grep, po
 					return nil, fmt.Errorf("failed to read file %q: %w", name, err)
 				}
 				lines := strings.Split(string(fullText), "\n")
-				indexBefore := lineno - g.linesBefore
-				if indexBefore < 0 {
-					indexBefore = 0
-				}
-				indexAfter := lineno + g.linesAfter
-				if indexAfter > len(lines) {
-					indexAfter = len(lines)
-				}
-				before = lines[indexBefore:lineno]
-				after = lines[lineno+1 : indexAfter+1]
+				before, after = contextLines(lines, lineno, g.linesBefore, g.linesAfter)
 			}
 			// find start and end offsets for highlight
 			offsets := re.FindAllStringIndex(line, -1)
