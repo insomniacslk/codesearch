@@ -76,15 +76,16 @@ func clamp(v, lo, hi int) int {
 	return v
 }
 
-// contextLines returns the lines surrounding the match at lineno. Every index
-// is clamped to the file, so a match near either end of the file yields a
-// shorter context rather than going out of range.
+// contextLines returns the lines surrounding the match at lineno, which is
+// 1-based. Every index is clamped to the file, so a match near either end of
+// the file yields a shorter context rather than going out of range.
 func contextLines(lines []string, lineno, before, after int) ([]string, []string) {
 	n := len(lines)
-	beforeStart := clamp(lineno-before, 0, n)
-	beforeEnd := clamp(lineno, beforeStart, n)
-	afterStart := clamp(lineno+1, 0, n)
-	afterEnd := clamp(lineno+1+after, afterStart, n)
+	idx := lineno - 1
+	beforeStart := clamp(idx-before, 0, n)
+	beforeEnd := clamp(idx, beforeStart, n)
+	afterStart := clamp(idx+1, 0, n)
+	afterEnd := clamp(idx+1+after, afterStart, n)
 	return lines[beforeStart:beforeEnd], lines[afterStart:afterEnd]
 }
 
