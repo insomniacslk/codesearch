@@ -222,6 +222,9 @@ func (g *Csearch) toResult(ctx context.Context, pattern string, ix *index.Index,
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
+		if opts.Limit > 0 && uint(len(results)) >= opts.Limit {
+			break
+		}
 		name := ix.Name(fileid)
 		logrus.Debugf("fileid=%d name=%q", fileid, name)
 		grep.File(name)

@@ -98,6 +98,10 @@ func (g *Github) Search(ctx context.Context, terms string, opts SearchOptions) (
 		if response.NextPage == 0 {
 			break
 		}
+		if opts.Limit > 0 && uint(len(csresults)) >= opts.Limit {
+			logrus.Debugf("Stopping after %d hits, enough for a limit of %d", len(csresults), opts.Limit)
+			break
+		}
 		sopts.Page = response.NextPage
 	}
 	return g.toResult(ctx, client, csresults, opts)
@@ -125,7 +129,7 @@ func retry(ctx context.Context, fn func() error) error {
 		if attempt >= maxAttempts {
 			return fmt.Errorf("giving up after %d attempts: %w", maxAttempts, err)
 		}
-		logrus.Debugf("Hit rate limit, waiting %s before retry %d/%d", delay, attempt+1, maxAttempts)
+		logrus.Warnf("Rate limited, waiting %s before retry %d/%d", delay.Round(time.Second), attempt+1, maxAttempts)
 		if serr := sleep(ctx, delay); serr != nil {
 			return serr
 		}
@@ -212,6 +216,10 @@ func (g *Github) toResult(ctx context.Context, client *github.Client, csresults 
 	var results Results
 	contents := make(map[string]string)
 	for _, res := range csresults {
+		// each hit costs a file download, so stop as soon as there are enough
+		if opts.Limit > 0 && uint(len(results)) >= opts.Limit {
+			break
+		}
 		logrus.Debugf("Result:\n")
 		logrus.Debugf("  Name: %s:\n", res.GetName())
 		logrus.Debugf("  Path: %s:\n", res.GetPath())

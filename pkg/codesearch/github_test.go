@@ -574,3 +574,95 @@ func TestGithubCacheIsPerFile(t *testing.T) {
 		t.Errorf("got %d distinct paths fetched, want 2", len(seen))
 	}
 }
+
+// pagedGithubServer serves `pages` pages of `perPage` hits each, counting the
+// requests it receives.
+func pagedGithubServer(t *testing.T, pages, perPage int, searches, contents *int32) *httptest.Server {
+	t.Helper()
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.Contains(r.URL.Path, "/search/code"):
+			n := int(atomic.AddInt32(searches, 1))
+			items := make([]string, 0, perPage)
+			for i := range perPage {
+				items = append(items, codeResultJSON(fmt.Sprintf("p%d/f%d.go", n, i), "needle", 0, 6))
+			}
+			next := 0
+			if n < pages {
+				next = n + 1
+			}
+			searchPage(w, r, strings.Join(items, ","), next)
+		case strings.Contains(r.URL.Path, "/contents/"):
+			atomic.AddInt32(contents, 1)
+			fmt.Fprint(w, base64File("needle\n"))
+		default:
+			t.Errorf("unexpected request to %s", r.URL.Path)
+			http.NotFound(w, r)
+		}
+	}))
+}
+
+// TestGithubLimitStopsPaging is the fix for exhausting the search quota: the
+// code search API allows 30 requests a minute, and paging through every result
+// of a search that is about to be truncated spends it for nothing.
+func TestGithubLimitStopsPaging(t *testing.T) {
+	for _, tt := range []struct {
+		name                         string
+		limit                        uint
+		wantMaxSearches, wantMaxGets int32
+	}{
+		{name: "no limit fetches everything", limit: 0, wantMaxSearches: 10, wantMaxGets: 100},
+		{name: "limit 1", limit: 1, wantMaxSearches: 1, wantMaxGets: 1},
+		{name: "limit 5", limit: 5, wantMaxSearches: 1, wantMaxGets: 5},
+		{name: "limit spanning pages", limit: 15, wantMaxSearches: 2, wantMaxGets: 15},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			var searches, contents int32
+			srv := pagedGithubServer(t, 10, 10, &searches, &contents)
+			defer srv.Close()
+
+			results, err := newGithubBackend(t, srv.URL).Search(
+				context.Background(), "needle", SearchOptions{Limit: tt.limit})
+			if err != nil {
+				t.Fatalf("search failed: %v", err)
+			}
+			if got := atomic.LoadInt32(&searches); got > tt.wantMaxSearches {
+				t.Errorf("made %d search requests, want at most %d", got, tt.wantMaxSearches)
+			}
+			if got := atomic.LoadInt32(&contents); got > tt.wantMaxGets {
+				t.Errorf("made %d content requests, want at most %d", got, tt.wantMaxGets)
+			}
+			// still has to return enough to satisfy the limit
+			if tt.limit > 0 && uint(len(results)) < tt.limit {
+				t.Errorf("got %d results, want at least %d", len(results), tt.limit)
+			}
+		})
+	}
+}
+
+// TestGithubLimitDoesNotChangeTheLeadingResults checks that truncating early
+// returns the same results the unlimited search would have returned first.
+func TestGithubLimitDoesNotChangeTheLeadingResults(t *testing.T) {
+	var s1, c1, s2, c2 int32
+	full := pagedGithubServer(t, 3, 4, &s1, &c1)
+	defer full.Close()
+	limited := pagedGithubServer(t, 3, 4, &s2, &c2)
+	defer limited.Close()
+
+	all, err := newGithubBackend(t, full.URL).Search(context.Background(), "needle", SearchOptions{})
+	if err != nil {
+		t.Fatalf("search failed: %v", err)
+	}
+	some, err := newGithubBackend(t, limited.URL).Search(context.Background(), "needle", SearchOptions{Limit: 3})
+	if err != nil {
+		t.Fatalf("search failed: %v", err)
+	}
+	if len(some) < 3 {
+		t.Fatalf("got %d results, want at least 3", len(some))
+	}
+	for i := range 3 {
+		if all[i].Path != some[i].Path {
+			t.Errorf("result %d: limited search gave %q, unlimited gave %q", i, some[i].Path, all[i].Path)
+		}
+	}
+}

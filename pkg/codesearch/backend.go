@@ -27,6 +27,13 @@ type SearchOptions struct {
 	SearchInFilenames bool
 	// Timeout bounds a single backend. Zero means no deadline of its own.
 	Timeout time.Duration
+	// Limit stops the backend once it has produced this many results. Zero
+	// means fetch everything. It exists because the remote backends are
+	// metered: GitHub allows 30 code searches a minute, and paging through
+	// every result of a search whose output is about to be truncated spends
+	// that quota for nothing. Only the caller knows whether truncating early
+	// is safe, so it is opt-in rather than derived from the printed limit.
+	Limit uint
 }
 
 type Backend interface {

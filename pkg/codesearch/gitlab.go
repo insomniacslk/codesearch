@@ -129,6 +129,10 @@ func (g *Gitlab) Search(ctx context.Context, searchString string, opts SearchOpt
 		if response.NextPage == 0 {
 			break
 		}
+		if opts.Limit > 0 && uint(len(blobs)) >= opts.Limit {
+			logrus.Debugf("Stopping after %d blobs, enough for a limit of %d", len(blobs), opts.Limit)
+			break
+		}
 		sopts.Page = response.NextPage
 	}
 	return g.toResult(client, withCtx, searchString, blobs, opts)

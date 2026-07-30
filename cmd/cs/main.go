@@ -73,7 +73,7 @@ func init() {
 	searchCmd.PersistentFlags().IntVarP(&flagSearchContextAfter, "after", "A", 0, "Number of context lines to show after the result")
 	searchCmd.PersistentFlags().IntVarP(&flagSearchContext, "context", "C", 0, "Number of context lines to show on both sides of the result. A non-zero --before or --after takes precedence over it")
 	searchCmd.PersistentFlags().BoolVarP(&flagCaseInsensitive, "case-insensitive", "i", false, "Case-insensitive search")
-	searchCmd.PersistentFlags().UintVarP(&flagLimit, "limit", "l", 0, "Limit the amount of results that are printed per backend. 0 means no limit")
+	searchCmd.PersistentFlags().UintVarP(&flagLimit, "limit", "l", 0, "Limit the amount of results that are printed per backend. 0 means no limit. Unless --sort, --match-filename or -F is in play, backends stop fetching once the limit is met, which matters on rate-limited APIs")
 	searchCmd.PersistentFlags().StringVarP(&flagSort, "sort", "s", "", "Sort the results. Possible values: \"a-z\", \"z-a\"")
 	searchCmd.PersistentFlags().DurationVarP(&flagTimeout, "timeout", "t", 0, "Maximum time to spend on each backend, e.g. \"30s\" or \"2m\". 0 means no limit")
 	searchCmd.PersistentFlags().BoolVar(&flagJSON, "json", false, "Print results as JSON on stdout instead of formatted text")
@@ -377,6 +377,19 @@ func writeJSON(w io.Writer, outcomes []searchOutcome, totalResults int, total ti
 	return enc.Encode(out)
 }
 
+// backendLimit is the result limit that can safely be pushed down into the
+// backends. Nothing downstream may reorder or discard results for this to hold:
+// --sort needs the whole set before it means anything, --match-filename can
+// reject anything a backend returns, and -F deduplicates and re-sorts by path.
+// In those cases the backend fetches everything and the truncation stays where
+// it was, at print time.
+func backendLimit() uint {
+	if flagSort != "" || flagMatchFilename != "" || flagSearchInFilenames {
+		return 0
+	}
+	return flagLimit
+}
+
 // searchOutcome is what one backend produced, including a failure. Failures
 // are carried rather than raised so that one unreachable backend does not
 // discard the results of the others.
@@ -403,7 +416,8 @@ func runSearches(ctx context.Context, backends []codesearch.Backend, searchStrin
 			start := time.Now()
 			results, err := b.Search(ctx, searchString, opts)
 			if err != nil {
-				logrus.Errorf("Backend %q failed: %v", b.Name(), err)
+				// reported once, in the summary at the end
+				logrus.Debugf("Backend %q failed: %v", b.Name(), err)
 			}
 			ch <- indexed{idx, searchOutcome{
 				backend:  b,
@@ -610,6 +624,7 @@ var searchCmd = &cobra.Command{
 			CaseInsensitive:   flagCaseInsensitive,
 			SearchInFilenames: flagSearchInFilenames,
 			Timeout:           flagTimeout,
+			Limit:             backendLimit(),
 		})
 		totalResults := 0
 		for i := range outcomes {

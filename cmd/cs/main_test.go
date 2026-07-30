@@ -1102,3 +1102,50 @@ func TestLoadConfigErrorsAreDescriptive(t *testing.T) {
 		}
 	})
 }
+
+// TestBackendLimitOnlyPushedDownWhenSafe checks that the limit reaches the
+// backend only when nothing downstream reorders or discards results. Pushing it
+// down under --sort would sort an arbitrary prefix instead of the whole set,
+// and under -f it could return fewer results than asked for.
+func TestBackendLimitOnlyPushedDownWhenSafe(t *testing.T) {
+	for _, tt := range []struct {
+		name              string
+		limit             uint
+		sort              string
+		matchFilename     string
+		searchInFilenames bool
+		want              uint
+	}{
+		{name: "plain search", limit: 10, want: 10},
+		{name: "no limit set", limit: 0, want: 0},
+		{name: "sorting needs every result", limit: 10, sort: "a-z", want: 0},
+		{name: "filter may reject anything", limit: 10, matchFilename: `\.go$`, want: 0},
+		{name: "-F dedupes and re-sorts", limit: 10, searchInFilenames: true, want: 0},
+		{name: "sort and filter together", limit: 10, sort: "z-a", matchFilename: "x", want: 0},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			defer func() {
+				flagLimit, flagSort, flagMatchFilename, flagSearchInFilenames = 0, "", "", false
+			}()
+			flagLimit = tt.limit
+			flagSort = tt.sort
+			flagMatchFilename = tt.matchFilename
+			flagSearchInFilenames = tt.searchInFilenames
+
+			if got := backendLimit(); got != tt.want {
+				t.Errorf("got %d, want %d", got, tt.want)
+			}
+		})
+	}
+}
+
+// TestLimitedSearchStillHonoursThePrintedLimit checks the two limits agree: the
+// backend may return more than asked for, and the printer still trims to it.
+func TestLimitedSearchStillHonoursThePrintedLimit(t *testing.T) {
+	results := codesearch.Results{
+		contentResult("a.go", 1), contentResult("b.go", 2), contentResult("c.go", 3),
+	}
+	if got := selectResults(results, 2, nil); len(got) != 2 {
+		t.Errorf("got %d results, want 2", len(got))
+	}
+}
