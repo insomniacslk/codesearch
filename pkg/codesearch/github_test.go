@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -497,5 +498,79 @@ func TestGithubDebugLoggingDoesNotPanic(t *testing.T) {
 
 	if _, err := newGithubBackend(t, srv.URL).Search(context.Background(), "needle"); err != nil {
 		t.Logf("search returned error (acceptable): %v", err)
+	}
+}
+
+// TestGithubCachesFileContent checks that a file with several matches is
+// downloaded once rather than once per match. GitHub code search is rate
+// limited hard, so the request count matters more than the wall clock.
+func TestGithubCachesFileContent(t *testing.T) {
+	var fetches int32
+	item := `{
+		"name":"f.go","path":"src/f.go","sha":"x",
+		"html_url":"https://example.com/testorg/repo/blob/main/src/f.go",
+		"repository":{"name":"repo","html_url":"https://example.com/testorg/repo","owner":{"login":"testorg"}},
+		"text_matches":[
+			{"fragment":"needle one","matches":[{"indices":[0,6]}]},
+			{"fragment":"needle two","matches":[{"indices":[0,6]}]},
+			{"fragment":"needle three","matches":[{"indices":[0,6]}]}
+		]}`
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.Contains(r.URL.Path, "/search/code"):
+			searchPage(w, r, item, 0)
+		case strings.Contains(r.URL.Path, "/contents/"):
+			atomic.AddInt32(&fetches, 1)
+			fmt.Fprint(w, base64File("needle one\nneedle two\nneedle three\n"))
+		default:
+			t.Errorf("unexpected request to %s", r.URL.Path)
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+
+	results, err := newGithubBackend(t, srv.URL).Search(context.Background(), "needle")
+	if err != nil {
+		t.Fatalf("search failed: %v", err)
+	}
+	if got, want := len(results), 3; got != want {
+		t.Errorf("got %d results, want %d", got, want)
+	}
+	if got := atomic.LoadInt32(&fetches); got != 1 {
+		t.Errorf("got %d content fetches for one file with 3 matches, want 1", got)
+	}
+}
+
+// TestGithubCacheIsPerFile makes sure the cache keys on the full path, so
+// results in different files still fetch their own content.
+func TestGithubCacheIsPerFile(t *testing.T) {
+	var fetches int32
+	seen := map[string]bool{}
+	var mu sync.Mutex
+	items := codeResultJSON("src/a.go", "needle", 0, 6) + "," + codeResultJSON("src/b.go", "needle", 0, 6)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.Contains(r.URL.Path, "/search/code"):
+			searchPage(w, r, items, 0)
+		case strings.Contains(r.URL.Path, "/contents/"):
+			atomic.AddInt32(&fetches, 1)
+			mu.Lock()
+			seen[r.URL.Path] = true
+			mu.Unlock()
+			fmt.Fprint(w, base64File("needle\n"))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+
+	if _, err := newGithubBackend(t, srv.URL).Search(context.Background(), "needle"); err != nil {
+		t.Fatalf("search failed: %v", err)
+	}
+	if got := atomic.LoadInt32(&fetches); got != 2 {
+		t.Errorf("got %d content fetches for two distinct files, want 2", got)
+	}
+	if len(seen) != 2 {
+		t.Errorf("got %d distinct paths fetched, want 2", len(seen))
 	}
 }

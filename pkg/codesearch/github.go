@@ -192,8 +192,53 @@ func sleep(ctx context.Context, d time.Duration) error {
 	}
 }
 
+// fileContent fetches a file, remembering what it downloaded in cache. Code
+// search reports every match in a file as a separate text match, and the
+// search API is rate limited hard enough that re-downloading the same file
+// once per match is the difference between a search completing and hitting the
+// limit.
+func (g *Github) fileContent(ctx context.Context, client *github.Client, cache map[string]string, owner, repo, path string) (string, error) {
+	fullPath := fmt.Sprintf("%s/%s/%s", owner, repo, path)
+	if text, ok := cache[fullPath]; ok {
+		logrus.Debugf("Using cached content for %q", fullPath)
+		return text, nil
+	}
+	var rc *github.RepositoryContent
+	err := retry(ctx, func() error {
+		logrus.Debugf("Fetching file content, owner=%q repo=%q path=%q", owner, repo, path)
+		var (
+			resp *github.Response
+			err  error
+		)
+		rc, _, resp, err = client.Repositories.GetContents(
+			ctx, owner, repo, path, &github.RepositoryContentGetOptions{},
+		)
+		logrus.Debugf("Response: %+v", resp)
+		logrus.Debugf("RepositoryContent: %+v", rc)
+		return err
+	})
+	if err != nil {
+		return "", fmt.Errorf("failed to get content of file %q: %w", fullPath, err)
+	}
+	// GetContents returns a nil file content without an error when the path
+	// turns out to be a directory.
+	if rc == nil {
+		return "", fmt.Errorf("no file content returned for %q", fullPath)
+	}
+	// GetContent decodes according to the reported encoding and reports the
+	// >1MB "none" case, rather than dereferencing a Content that GitHub may
+	// not have populated at all.
+	text, err := rc.GetContent()
+	if err != nil {
+		return "", fmt.Errorf("failed to read content of file %q: %w", fullPath, err)
+	}
+	cache[fullPath] = text
+	return text, nil
+}
+
 func (g *Github) toResult(ctx context.Context, client *github.Client, csresults []*github.CodeResult) (Results, error) {
 	var results Results
+	contents := make(map[string]string)
 	for _, res := range csresults {
 		logrus.Debugf("Result:\n")
 		logrus.Debugf("  Name: %s:\n", res.GetName())
@@ -203,43 +248,13 @@ func (g *Github) toResult(ctx context.Context, client *github.Client, csresults 
 		logrus.Debugf("  Repository: %+v:\n", res.Repository)
 		logrus.Debugf("  TextMatches:\n")
 		for idx, tm := range res.TextMatches {
-			fullPath := fmt.Sprintf("%s/%s/%s", res.GetRepository().GetOwner().GetLogin(), res.GetRepository().GetName(), res.GetPath())
-			var rc *github.RepositoryContent
-			err := retry(ctx, func() error {
-				logrus.Debugf("Fetching file content, owner=%q repo=%q path=%q",
-					res.GetRepository().GetOwner().GetLogin(),
-					res.GetRepository().GetName(),
-					res.GetPath(),
-				)
-				var (
-					resp *github.Response
-					err  error
-				)
-				rc, _, resp, err = client.Repositories.GetContents(
-					ctx,
-					res.GetRepository().GetOwner().GetLogin(),
-					res.GetRepository().GetName(),
-					res.GetPath(),
-					&github.RepositoryContentGetOptions{},
-				)
-				logrus.Debugf("Response: %+v", resp)
-				logrus.Debugf("RepositoryContent: %+v", rc)
-				return err
-			})
+			fullText, err := g.fileContent(ctx, client, contents,
+				res.GetRepository().GetOwner().GetLogin(),
+				res.GetRepository().GetName(),
+				res.GetPath(),
+			)
 			if err != nil {
-				return nil, fmt.Errorf("failed to get content of file %q: %w", fullPath, err)
-			}
-			// GetContents returns a nil file content without an error when the
-			// path turns out to be a directory.
-			if rc == nil {
-				return nil, fmt.Errorf("no file content returned for %q", fullPath)
-			}
-			// GetContent decodes according to the reported encoding and
-			// reports the >1MB "none" case, rather than dereferencing a
-			// Content that GitHub may not have populated at all.
-			fullText, err := rc.GetContent()
-			if err != nil {
-				return nil, fmt.Errorf("failed to read content of file %q: %w", fullPath, err)
+				return nil, err
 			}
 			// find fragment in full text
 			fragmentStart := strings.Index(fullText, tm.GetFragment())
