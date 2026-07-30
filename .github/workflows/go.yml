@@ -12,7 +12,15 @@ on:
 jobs:
 
   build:
-    runs-on: ubuntu-latest
+    # macOS is not redundant here: the config search path is
+    # $HOME/Library/Application Support rather than XDG_CONFIG_HOME, and the
+    # filesystem is case-insensitive, neither of which Linux exercises.
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    name: build (${{ matrix.os }})
     steps:
     - uses: actions/checkout@v4
 
@@ -29,6 +37,8 @@ jobs:
       run: go vet ./...
 
     - name: Check formatting
+      # gofmt output does not vary by platform, so once is enough
+      if: matrix.os == 'ubuntu-latest'
       run: |
         unformatted=$(gofmt -l .)
         if [ -n "$unformatted" ]; then

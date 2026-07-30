@@ -296,20 +296,28 @@ func TestGithubSearchTerminatesWhenRateLimited(t *testing.T) {
 }
 
 func TestGithubSearchHonoursTimeout(t *testing.T) {
+	const serverDelay = 10 * time.Second
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		time.Sleep(500 * time.Millisecond)
-		searchPage(w, r, "", 0)
+		// honour cancellation, so closing the server does not sit out the
+		// delay once the client has already given up
+		select {
+		case <-r.Context().Done():
+		case <-time.After(serverDelay):
+			searchPage(w, r, "", 0)
+		}
 	}))
 	defer srv.Close()
 
-	g := newGithubBackend(t, srv.URL)
 	start := time.Now()
-	_, err := g.Search(context.Background(), "needle", SearchOptions{Timeout: 100 * time.Millisecond})
+	_, err := newGithubBackend(t, srv.URL).Search(
+		context.Background(), "needle", SearchOptions{Timeout: 200 * time.Millisecond})
 	if err == nil {
 		t.Fatal("got nil error, want a timeout")
 	}
-	if elapsed := time.Since(start); elapsed > 400*time.Millisecond {
-		t.Errorf("took %s, want it to stop at the timeout", elapsed)
+	// deliberately loose: the claim is that it stops at the timeout rather
+	// than waiting for the server, not that it stops within any exact margin
+	if elapsed := time.Since(start); elapsed >= serverDelay/2 {
+		t.Errorf("took %s, want it to stop at the 200ms timeout", elapsed)
 	}
 }
 
