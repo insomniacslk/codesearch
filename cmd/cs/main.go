@@ -3,8 +3,10 @@ package main
 import (
 	"context"
 	_ "embed"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"log"
 	"os"
@@ -41,6 +43,7 @@ var (
 	flagLimit               uint
 	flagSort                string
 	flagTimeout             time.Duration
+	flagJSON                bool
 
 	searchBackends string
 
@@ -69,6 +72,7 @@ func init() {
 	searchCmd.PersistentFlags().UintVarP(&flagLimit, "limit", "l", 0, "Limit the amount of results that are printed per backend. 0 means no limit")
 	searchCmd.PersistentFlags().StringVarP(&flagSort, "sort", "s", "", "Sort the results. Possible values: \"a-z\", \"z-a\"")
 	searchCmd.PersistentFlags().DurationVarP(&flagTimeout, "timeout", "t", 0, "Maximum time to spend on each backend, e.g. \"30s\" or \"2m\". 0 means no limit")
+	searchCmd.PersistentFlags().BoolVar(&flagJSON, "json", false, "Print results as JSON on stdout instead of formatted text")
 
 	rootCmd.AddCommand(searchCmd)
 	rootCmd.AddCommand(listCmd)
@@ -92,6 +96,7 @@ var flagToConfigKey = map[string]string{
 	"search-in-filenames": "defaults.search_in_filenames",
 	"match-filename":      "defaults.match_filename",
 	"timeout":             "defaults.timeout",
+	"json":                "defaults.json",
 }
 
 func bindFlags() {
@@ -123,6 +128,7 @@ func resolveFlags() {
 	flagSearchInFilenames = viper.GetBool("defaults.search_in_filenames")
 	flagMatchFilename = viper.GetString("defaults.match_filename")
 	flagTimeout = viper.GetDuration("defaults.timeout")
+	flagJSON = viper.GetBool("defaults.json")
 
 	if flagDebug {
 		logrus.SetLevel(logrus.DebugLevel)
@@ -244,14 +250,91 @@ func splitHighlight(line string, h [2]int) (head, match, tail string) {
 	return line[:start], line[start:end], line[end:]
 }
 
+// printResult renders one result as formatted text.
+func printResult(res *codesearch.Result, filenamesOnly bool) {
+	location := fmt.Sprintf(
+		"%s:%s:%s (%s)",
+		res.Backend,
+		textBold.Sprint(toAnsiURL(res.RepoURL, repoNameFromRes(res))),
+		textBold.Sprint(toAnsiURL(res.FileURL, res.Path)),
+		textBold.Sprint(res.Branch),
+	)
+	if filenamesOnly {
+		fmt.Printf("%s\n\n", location)
+		return
+	}
+	var before, after string
+	for idx, line := range res.Context.Before {
+		before += fmt.Sprintf("%d: %s\n", res.Lineno-(len(res.Context.Before)-idx), line)
+	}
+	for idx, line := range res.Context.After {
+		after += fmt.Sprintf("%d: %s\n", res.Lineno+idx+1, line)
+	}
+	if len(res.Context.After) > 0 {
+		after = "\n" + after
+	}
+	head, match, tail := splitHighlight(res.Line, res.Highlight)
+	fmt.Printf(
+		"%s\n\n%s%s: %s%s\n\n",
+		location,
+		before,
+		textBoldGreen.Sprint(res.Lineno),
+		head+textBoldRed.Sprint(match)+tail,
+		after,
+	)
+}
+
+// jsonOutput is the machine-readable form of a run. Backends are reported
+// alongside the results so a caller can tell a genuinely empty search from one
+// where a backend failed.
+type jsonOutput struct {
+	Results      []*codesearch.Result `json:"results"`
+	Backends     []jsonBackend        `json:"backends"`
+	TotalResults int                  `json:"total_results"`
+	DurationMS   int64                `json:"duration_ms"`
+}
+
+type jsonBackend struct {
+	Name       string `json:"name"`
+	Type       string `json:"type"`
+	Results    int    `json:"results"`
+	DurationMS int64  `json:"duration_ms"`
+	Error      string `json:"error,omitempty"`
+}
+
+func writeJSON(w io.Writer, outcomes []searchOutcome, totalResults int, total time.Duration) error {
+	out := jsonOutput{
+		Results:      []*codesearch.Result{},
+		Backends:     make([]jsonBackend, 0, len(outcomes)),
+		TotalResults: totalResults,
+		DurationMS:   total.Milliseconds(),
+	}
+	for _, o := range outcomes {
+		out.Results = append(out.Results, o.selected...)
+		b := jsonBackend{
+			Name:       o.backend.Name(),
+			Type:       o.backend.Type(),
+			Results:    len(o.selected),
+			DurationMS: o.duration.Milliseconds(),
+		}
+		if o.err != nil {
+			b.Error = o.err.Error()
+		}
+		out.Backends = append(out.Backends, b)
+	}
+	enc := json.NewEncoder(w)
+	enc.SetIndent("", "  ")
+	return enc.Encode(out)
+}
+
 // searchOutcome is what one backend produced, including a failure. Failures
 // are carried rather than raised so that one unreachable backend does not
 // discard the results of the others.
 type searchOutcome struct {
 	backend  codesearch.Backend
 	results  codesearch.Results
+	selected []*codesearch.Result
 	duration time.Duration
-	printed  int
 	err      error
 }
 
@@ -463,61 +546,35 @@ var searchCmd = &cobra.Command{
 			if o.err != nil {
 				continue
 			}
-			b := o.backend
 			// sort the results, if requested
 			results := sorter(o.results)
-			var numResults int
 			if flagSearchInFilenames {
-				selected := selectFilenames(results, flagLimit)
-				for _, res := range selected {
-					fmt.Printf(
-						"%s:%s:%s (%s)\n\n",
-						b.Name(),
-						textBold.Sprint(toAnsiURL(res.RepoURL, repoNameFromRes(res))),
-						textBold.Sprint(toAnsiURL(res.FileURL, res.Path)),
-						textBold.Sprint(res.Branch),
-					)
-				}
-				numResults = len(selected)
+				o.selected = selectFilenames(results, flagLimit)
 			} else {
-				selected := selectResults(results, flagLimit, flagMatchFilename)
-				for _, res := range selected {
-					var before, after string
-					for idx, line := range res.Context.Before {
-						before += fmt.Sprintf("%d: %s\n", res.Lineno-(len(res.Context.Before)-idx), line)
-					}
-					for idx, line := range res.Context.After {
-						after += fmt.Sprintf("%d: %s\n", res.Lineno+idx+1, line)
-					}
-					if len(res.Context.After) > 0 {
-						after = "\n" + after
-					}
-					head, match, tail := splitHighlight(res.Line, res.Highlight)
-					fmt.Printf(
-						"%s:%s:%s (%s)\n\n%s%s: %s%s\n\n",
-						res.Backend,
-						textBold.Sprint(toAnsiURL(res.RepoURL, repoNameFromRes(res))),
-						textBold.Sprint(toAnsiURL(res.FileURL, res.Path)),
-						textBold.Sprint(res.Branch),
-						before,
-						textBoldGreen.Sprint(res.Lineno),
-						head+textBoldRed.Sprint(match)+tail,
-						after,
-					)
-				}
-				numResults = len(selected)
+				o.selected = selectResults(results, flagLimit, flagMatchFilename)
 			}
-			o.printed = numResults
-			totalResults += numResults
+			totalResults += len(o.selected)
 		}
 		totalTime := time.Since(searchStart)
+
+		if flagJSON {
+			if err := writeJSON(os.Stdout, outcomes, totalResults, totalTime); err != nil {
+				logrus.Fatalf("Failed to write JSON output: %v", err)
+			}
+		} else {
+			for _, o := range outcomes {
+				for _, res := range o.selected {
+					printResult(res, flagSearchInFilenames)
+				}
+			}
+		}
 		if flagStats {
 			for _, o := range outcomes {
 				if o.err != nil {
 					fmt.Fprintf(os.Stderr, "Failed on %q after %s\n", o.backend.Name(), o.duration)
 					continue
 				}
-				fmt.Fprintf(os.Stderr, "Got %d results on %q in %s\n", o.printed, o.backend.Name(), o.duration)
+				fmt.Fprintf(os.Stderr, "Got %d results on %q in %s\n", len(o.selected), o.backend.Name(), o.duration)
 			}
 		}
 		fmt.Fprintf(os.Stderr, "Got %d total results in %s\n", totalResults, totalTime)

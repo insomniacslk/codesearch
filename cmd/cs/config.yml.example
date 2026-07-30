@@ -25,6 +25,11 @@ defaults:
   case_insensitive: false
   search_in_filenames: false
   match_filename: ""
+  # Maximum time to spend on each backend, e.g. "30s". 0 means no limit. Same
+  # as --timeout.
+  timeout: 0
+  # Print results as JSON on stdout instead of formatted text. Same as --json.
+  json: false
 
 # List of all the configured backends
 backends:

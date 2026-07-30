@@ -1,7 +1,9 @@
 package main
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -665,5 +667,83 @@ func TestRunSearchesHonoursCancellation(t *testing.T) {
 		if !errors.Is(o.err, context.Canceled) {
 			t.Errorf("backend %q: got error %v, want context.Canceled", o.backend.Name(), o.err)
 		}
+	}
+}
+
+func TestWriteJSON(t *testing.T) {
+	outcomes := []searchOutcome{
+		{
+			backend:  &fakeBackend{name: "local"},
+			duration: 150 * time.Millisecond,
+			selected: []*codesearch.Result{
+				{
+					Backend: "local", Path: "cmd/cs/main.go", Line: "func main() {}",
+					Lineno: 42, Highlight: [2]int{5, 9}, FileURL: "file:///cmd/cs/main.go",
+					Context: codesearch.ResultContext{Before: []string{"prev"}, After: []string{"next"}},
+				},
+			},
+		},
+		{
+			backend:  &fakeBackend{name: "broken"},
+			duration: 20 * time.Millisecond,
+			err:      errors.New("upstream 502"),
+		},
+	}
+
+	var buf bytes.Buffer
+	if err := writeJSON(&buf, outcomes, 1, 200*time.Millisecond); err != nil {
+		t.Fatalf("writeJSON failed: %v", err)
+	}
+
+	var got jsonOutput
+	if err := json.Unmarshal(buf.Bytes(), &got); err != nil {
+		t.Fatalf("output is not valid JSON: %v\n%s", err, buf.String())
+	}
+	if got.TotalResults != 1 {
+		t.Errorf("total_results: got %d, want 1", got.TotalResults)
+	}
+	if got.DurationMS != 200 {
+		t.Errorf("duration_ms: got %d, want 200", got.DurationMS)
+	}
+	if len(got.Results) != 1 {
+		t.Fatalf("got %d results, want 1", len(got.Results))
+	}
+	r := got.Results[0]
+	if r.Path != "cmd/cs/main.go" || r.Lineno != 42 || r.Line != "func main() {}" {
+		t.Errorf("result round-tripped as %+v", r)
+	}
+	if len(r.Context.Before) != 1 || r.Context.Before[0] != "prev" {
+		t.Errorf("context did not round-trip: %+v", r.Context)
+	}
+
+	if len(got.Backends) != 2 {
+		t.Fatalf("got %d backends, want 2", len(got.Backends))
+	}
+	// a failing backend must be visible, so an empty result set can be told
+	// apart from a broken one
+	if got.Backends[1].Error == "" {
+		t.Error("failing backend reported no error")
+	}
+	if got.Backends[0].Error != "" {
+		t.Errorf("healthy backend reported error %q", got.Backends[0].Error)
+	}
+	if got.Backends[0].Results != 1 || got.Backends[1].Results != 0 {
+		t.Errorf("per-backend counts wrong: %+v", got.Backends)
+	}
+}
+
+// TestWriteJSONEmptyIsAnArray keeps the results field an array rather than
+// null, so consumers can iterate it unconditionally.
+func TestWriteJSONEmptyIsAnArray(t *testing.T) {
+	var buf bytes.Buffer
+	if err := writeJSON(&buf, nil, 0, 0); err != nil {
+		t.Fatalf("writeJSON failed: %v", err)
+	}
+	if !strings.Contains(buf.String(), `"results": []`) {
+		t.Errorf("got %s, want an empty results array", buf.String())
+	}
+	var raw map[string]any
+	if err := json.Unmarshal(buf.Bytes(), &raw); err != nil {
+		t.Fatalf("output is not valid JSON: %v", err)
 	}
 }
