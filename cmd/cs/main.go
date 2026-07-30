@@ -280,15 +280,15 @@ func selectResults(results codesearch.Results, limit uint, matchFilename string)
 }
 
 // selectFilenames picks the unique file names to print for a -F search. The
-// limit counts distinct file names, since that is what gets printed.
-func selectFilenames(results codesearch.Results, limit uint, searchString string) []*codesearch.Result {
+// backend has already matched the pattern against the file names, so nothing
+// is re-tested here: a substring check would throw away every hit from a
+// pattern that is not a literal, which is exactly what csearch searches with.
+// The limit counts distinct file names, since that is what gets printed.
+func selectFilenames(results codesearch.Results, limit uint) []*codesearch.Result {
 	seen := make(map[string]struct{}, len(results))
 	var out []*codesearch.Result
 	for i := range results {
 		res := &results[i]
-		if !strings.Contains(strings.ToLower(res.Path), strings.ToLower(searchString)) {
-			continue
-		}
 		if _, ok := seen[res.Path]; ok {
 			continue
 		}
@@ -395,7 +395,7 @@ var searchCmd = &cobra.Command{
 			results = sorter(results)
 			var numResults int
 			if flagSearchInFilenames {
-				selected := selectFilenames(results, flagLimit, searchString)
+				selected := selectFilenames(results, flagLimit)
 				for _, res := range selected {
 					fmt.Printf(
 						"%s:%s:%s (%s)\n\n",

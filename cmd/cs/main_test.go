@@ -278,11 +278,10 @@ func TestSelectFilenames(t *testing.T) {
 		{Path: "cmd/main.go"},
 		{Path: "cmd/main.go"},
 		{Path: "pkg/main.go"},
-		{Path: "README.md"},
 	}
 	t.Run("deduplicates and sorts", func(t *testing.T) {
 		var got []string
-		for _, r := range selectFilenames(results, 0, "main.go") {
+		for _, r := range selectFilenames(results, 0) {
 			got = append(got, r.Path)
 		}
 		if want := []string{"cmd/main.go", "pkg/main.go"}; !equalStrings(got, want) {
@@ -290,7 +289,7 @@ func TestSelectFilenames(t *testing.T) {
 		}
 	})
 	t.Run("limit counts unique names", func(t *testing.T) {
-		got := selectFilenames(results, 1, "main.go")
+		got := selectFilenames(results, 1)
 		if len(got) != 1 {
 			t.Fatalf("got %d results, want 1", len(got))
 		}
@@ -302,11 +301,35 @@ func TestSelectFilenames(t *testing.T) {
 		dupes := codesearch.Results{
 			{Path: "same.go"}, {Path: "same.go"}, {Path: "same.go"}, {Path: "other.go"},
 		}
-		got := selectFilenames(dupes, 2, ".go")
+		got := selectFilenames(dupes, 2)
 		if len(got) != 2 {
 			t.Fatalf("got %d results, want 2", len(got))
 		}
 	})
+}
+
+// TestSelectFilenamesKeepsNonLiteralMatches covers the regression where -F
+// results were re-filtered with strings.Contains against the raw search
+// string. csearch matches file names with a regexp, so every hit from a
+// pattern containing metacharacters was discarded and -F printed nothing.
+func TestSelectFilenamesKeepsNonLiteralMatches(t *testing.T) {
+	// what a csearch -F search for `\.go$` legitimately returns
+	results := codesearch.Results{
+		{Path: "cmd/cs/main.go", IsFilename: true},
+		{Path: "pkg/codesearch/github.go", IsFilename: true},
+	}
+	got := selectFilenames(results, 0)
+	if len(got) != len(results) {
+		t.Fatalf("got %d results, want %d", len(got), len(results))
+	}
+	want := []string{"cmd/cs/main.go", "pkg/codesearch/github.go"}
+	var paths []string
+	for _, r := range got {
+		paths = append(paths, r.Path)
+	}
+	if !equalStrings(paths, want) {
+		t.Errorf("got %q, want %q", paths, want)
+	}
 }
 
 func equalStrings(a, b []string) bool {
