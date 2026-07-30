@@ -776,32 +776,21 @@ func TestToAnsiURL(t *testing.T) {
 	})
 }
 
-// TestPrintedOutputIsPlainWhenColourIsOff is the point of the change: piping
-// the output to a file must not embed terminal escapes in it.
+// TestPrintedOutputIsPlainWhenColourIsOff is the point of gating hyperlinks:
+// redirected output must not have terminal escapes embedded in it.
 func TestPrintedOutputIsPlainWhenColourIsOff(t *testing.T) {
 	old := color.NoColor
 	color.NoColor = true
 	defer func() { color.NoColor = old }()
 
-	stdout := os.Stdout
-	r, w, err := os.Pipe()
-	if err != nil {
-		t.Fatalf("failed to make a pipe: %v", err)
-	}
-	os.Stdout = w
-	printResult(&codesearch.Result{
+	var buf bytes.Buffer
+	printResult(&buf, &codesearch.Result{
 		Backend: "local", Path: "cmd/cs/main.go", Line: "func main() {}",
 		Lineno: 42, Highlight: [2]int{5, 9},
 		RepoURL: "file:///repo", FileURL: "file:///repo/cmd/cs/main.go",
 		Context: codesearch.ResultContext{Before: []string{"prev"}, After: []string{"next"}},
 	}, false)
-	w.Close()
-	os.Stdout = stdout
 
-	var buf bytes.Buffer
-	if _, err := buf.ReadFrom(r); err != nil {
-		t.Fatalf("failed to read output: %v", err)
-	}
 	out := buf.String()
 	if strings.Contains(out, "\033") {
 		t.Errorf("output contains escape sequences:\n%q", out)
@@ -810,6 +799,51 @@ func TestPrintedOutputIsPlainWhenColourIsOff(t *testing.T) {
 		if !strings.Contains(out, want) {
 			t.Errorf("output does not contain %q:\n%s", want, out)
 		}
+	}
+}
+
+// TestContextBlockNumbering checks that the line numbers printed beside the
+// context lines are the ones those lines actually have in the file.
+func TestContextBlockNumbering(t *testing.T) {
+	res := &codesearch.Result{
+		Lineno: 10,
+		Context: codesearch.ResultContext{
+			Before: []string{"seven", "eight", "nine"},
+			After:  []string{"eleven", "twelve"},
+		},
+	}
+	before, after := contextBlock(res)
+	if want := "7: seven\n8: eight\n9: nine\n"; before != want {
+		t.Errorf("before:\ngot  %q\nwant %q", before, want)
+	}
+	if want := "\n11: eleven\n12: twelve\n"; after != want {
+		t.Errorf("after:\ngot  %q\nwant %q", after, want)
+	}
+}
+
+func TestContextBlockEmpty(t *testing.T) {
+	before, after := contextBlock(&codesearch.Result{Lineno: 3})
+	if before != "" || after != "" {
+		t.Errorf("got (%q, %q), want both empty", before, after)
+	}
+}
+
+// TestPrintResultFilenamesOnly checks the -F rendering prints the location and
+// nothing else, since there is no matching line to show.
+func TestPrintResultFilenamesOnly(t *testing.T) {
+	old := color.NoColor
+	color.NoColor = true
+	defer func() { color.NoColor = old }()
+
+	var buf bytes.Buffer
+	printResult(&buf, &codesearch.Result{
+		Backend: "local", Path: "cmd/cs/main.go", Branch: "main",
+		RepoURL: "file:///repo", FileURL: "file:///repo/cmd/cs/main.go",
+		IsFilename: true,
+	}, true)
+
+	if got, want := buf.String(), "local::cmd/cs/main.go (main)\n\n"; got != want {
+		t.Errorf("got %q, want %q", got, want)
 	}
 }
 

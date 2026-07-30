@@ -272,8 +272,23 @@ func splitHighlight(line string, h [2]int) (head, match, tail string) {
 	return line[:start], line[start:end], line[end:]
 }
 
-// printResult renders one result as formatted text.
-func printResult(res *codesearch.Result, filenamesOnly bool) {
+// contextBlock renders the lines around a match, numbered relative to it.
+func contextBlock(res *codesearch.Result) (before, after string) {
+	for i, line := range res.Context.Before {
+		before += fmt.Sprintf("%d: %s\n", res.Lineno-(len(res.Context.Before)-i), line)
+	}
+	for i, line := range res.Context.After {
+		after += fmt.Sprintf("%d: %s\n", res.Lineno+i+1, line)
+	}
+	if after != "" {
+		after = "\n" + after
+	}
+	return before, after
+}
+
+// printResult renders one result as formatted text. A file name search has no
+// line to show, so it prints the location alone.
+func printResult(w io.Writer, res *codesearch.Result, filenamesOnly bool) {
 	location := fmt.Sprintf(
 		"%s:%s:%s (%s)",
 		res.Backend,
@@ -282,21 +297,13 @@ func printResult(res *codesearch.Result, filenamesOnly bool) {
 		textBold.Sprint(res.Branch),
 	)
 	if filenamesOnly {
-		fmt.Printf("%s\n\n", location)
+		fmt.Fprintf(w, "%s\n\n", location)
 		return
 	}
-	var before, after string
-	for idx, line := range res.Context.Before {
-		before += fmt.Sprintf("%d: %s\n", res.Lineno-(len(res.Context.Before)-idx), line)
-	}
-	for idx, line := range res.Context.After {
-		after += fmt.Sprintf("%d: %s\n", res.Lineno+idx+1, line)
-	}
-	if len(res.Context.After) > 0 {
-		after = "\n" + after
-	}
+	before, after := contextBlock(res)
 	head, match, tail := splitHighlight(res.Line, res.Highlight)
-	fmt.Printf(
+	fmt.Fprintf(
+		w,
 		"%s\n\n%s%s: %s%s\n\n",
 		location,
 		before,
@@ -606,7 +613,7 @@ var searchCmd = &cobra.Command{
 		} else {
 			for _, o := range outcomes {
 				for _, res := range o.selected {
-					printResult(res, flagSearchInFilenames)
+					printResult(os.Stdout, res, flagSearchInFilenames)
 				}
 			}
 		}
