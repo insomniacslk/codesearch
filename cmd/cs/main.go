@@ -44,6 +44,7 @@ var (
 	flagSort                string
 	flagTimeout             time.Duration
 	flagJSON                bool
+	flagNoColor             bool
 
 	searchBackends string
 
@@ -62,6 +63,7 @@ func init() {
 	rootCmd.PersistentFlags().StringVarP(&configFile, "config", "c", "", "Configuration file")
 	rootCmd.PersistentFlags().BoolVarP(&flagDebug, "debug", "d", false, "Print debug messages")
 	rootCmd.PersistentFlags().BoolVarP(&flagStats, "stats", "S", false, "Print stats")
+	rootCmd.PersistentFlags().BoolVar(&flagNoColor, "no-color", false, "Disable colours and terminal hyperlinks. They are disabled automatically when stdout is not a terminal, or when NO_COLOR is set")
 
 	searchCmd.PersistentFlags().StringVarP(&searchBackends, "backends", "b", "", "Comma-separated list of names of the backends to use. The names are defined in your configuration file. If specified, it overrides `default_backends` in the configuration file. \"all\" will use every backend")
 	searchCmd.PersistentFlags().BoolVarP(&flagSearchInFilenames, "search-in-filenames", "F", false, "Search only in file names")
@@ -88,6 +90,7 @@ func init() {
 var flagToConfigKey = map[string]string{
 	"debug":               "debug",
 	"stats":               "stats",
+	"no-color":            "no_color",
 	"limit":               "defaults.limit",
 	"sort":                "defaults.sort",
 	"before":              "defaults.before",
@@ -129,6 +132,12 @@ func resolveFlags() {
 	flagMatchFilename = viper.GetString("defaults.match_filename")
 	flagTimeout = viper.GetDuration("defaults.timeout")
 	flagJSON = viper.GetBool("defaults.json")
+
+	// only ever force colours off: the library has already worked out whether
+	// stdout is a terminal, and that answer must not be overridden
+	if flagNoColor = viper.GetBool("no_color"); flagNoColor {
+		color.NoColor = true
+	}
 
 	if flagDebug {
 		logrus.SetLevel(logrus.DebugLevel)
@@ -592,7 +601,14 @@ var searchCmd = &cobra.Command{
 	},
 }
 
+// toAnsiURL wraps text in an OSC 8 terminal hyperlink. The escapes are
+// invisible in a terminal that understands them, but land verbatim in the
+// output when it is redirected to a file or a pipe, so they follow the same
+// switch as the colours: NO_COLOR, --no-color, or stdout not being a terminal.
 func toAnsiURL(url, text string) string {
+	if color.NoColor {
+		return text
+	}
 	return fmt.Sprintf("\033]8;;%s\033\\%s\033]8;;\033\\", url, text)
 }
 

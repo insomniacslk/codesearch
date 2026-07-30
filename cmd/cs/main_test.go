@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/fatih/color"
 	"github.com/insomniacslk/codesearch/pkg/codesearch"
 	"github.com/spf13/viper"
 )
@@ -740,5 +741,72 @@ func TestWriteJSONEmptyIsAnArray(t *testing.T) {
 	var raw map[string]any
 	if err := json.Unmarshal(buf.Bytes(), &raw); err != nil {
 		t.Fatalf("output is not valid JSON: %v", err)
+	}
+}
+
+func TestToAnsiURL(t *testing.T) {
+	old := color.NoColor
+	defer func() { color.NoColor = old }()
+
+	t.Run("plain text when colour is off", func(t *testing.T) {
+		color.NoColor = true
+		got := toAnsiURL("https://example.com/f.go", "f.go")
+		if got != "f.go" {
+			t.Errorf("got %q, want %q", got, "f.go")
+		}
+		if strings.Contains(got, "\033") {
+			t.Errorf("got %q, want no escape sequences", got)
+		}
+	})
+
+	t.Run("hyperlink when colour is on", func(t *testing.T) {
+		color.NoColor = false
+		got := toAnsiURL("https://example.com/f.go", "f.go")
+		if !strings.Contains(got, "https://example.com/f.go") {
+			t.Errorf("got %q, want it to carry the URL", got)
+		}
+		if !strings.Contains(got, "\033]8;;") {
+			t.Errorf("got %q, want an OSC 8 hyperlink", got)
+		}
+		if !strings.Contains(got, "f.go") {
+			t.Errorf("got %q, want it to carry the text", got)
+		}
+	})
+}
+
+// TestPrintedOutputIsPlainWhenColourIsOff is the point of the change: piping
+// the output to a file must not embed terminal escapes in it.
+func TestPrintedOutputIsPlainWhenColourIsOff(t *testing.T) {
+	old := color.NoColor
+	color.NoColor = true
+	defer func() { color.NoColor = old }()
+
+	stdout := os.Stdout
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("failed to make a pipe: %v", err)
+	}
+	os.Stdout = w
+	printResult(&codesearch.Result{
+		Backend: "local", Path: "cmd/cs/main.go", Line: "func main() {}",
+		Lineno: 42, Highlight: [2]int{5, 9},
+		RepoURL: "file:///repo", FileURL: "file:///repo/cmd/cs/main.go",
+		Context: codesearch.ResultContext{Before: []string{"prev"}, After: []string{"next"}},
+	}, false)
+	w.Close()
+	os.Stdout = stdout
+
+	var buf bytes.Buffer
+	if _, err := buf.ReadFrom(r); err != nil {
+		t.Fatalf("failed to read output: %v", err)
+	}
+	out := buf.String()
+	if strings.Contains(out, "\033") {
+		t.Errorf("output contains escape sequences:\n%q", out)
+	}
+	for _, want := range []string{"cmd/cs/main.go", "func main() {}", "42", "prev", "next"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("output does not contain %q:\n%s", want, out)
+		}
 	}
 }
