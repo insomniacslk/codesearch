@@ -3,6 +3,7 @@ package codesearch
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -13,7 +14,6 @@ import (
 
 	"github.com/google/codesearch/index"
 	"github.com/google/codesearch/regexp"
-	"github.com/mitchellh/go-homedir"
 	"github.com/sirupsen/logrus"
 )
 
@@ -33,16 +33,32 @@ func (g *Csearch) New(name string, params BackendParams) (Backend, error) {
 	if indexFile == nil {
 		return nil, fmt.Errorf("missing 'index_file' parameter")
 	}
-	var err error
-	*indexFile, err = homedir.Expand(*indexFile)
+	expanded, err := expandHome(*indexFile)
 	if err != nil {
 		return nil, fmt.Errorf("failed to expand path %q: %w", *indexFile, err)
 	}
 	gl := Csearch{
 		name:      name,
-		indexFile: *indexFile,
+		indexFile: expanded,
 	}
 	return &gl, nil
+}
+
+// expandHome resolves a leading ~ against the current user's home directory.
+// os.UserHomeDir does not do this itself, and ~user/ is not supported: there
+// is no portable way to look up another user's home directory.
+func expandHome(path string) (string, error) {
+	if path == "" || path[0] != '~' {
+		return path, nil
+	}
+	if len(path) > 1 && path[1] != '/' && path[1] != '\\' {
+		return "", errors.New("cannot expand user-specific home directory")
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", fmt.Errorf("failed to look up home directory: %w", err)
+	}
+	return filepath.Join(home, path[1:]), nil
 }
 
 func (g *Csearch) Name() string {

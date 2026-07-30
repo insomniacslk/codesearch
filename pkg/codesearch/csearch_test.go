@@ -366,3 +366,55 @@ func TestCsearchHonoursTimeout(t *testing.T) {
 		t.Errorf("got error %v, want context.DeadlineExceeded", err)
 	}
 }
+
+func TestExpandHome(t *testing.T) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		t.Skipf("no home directory: %v", err)
+	}
+	for _, tt := range []struct {
+		name, path, want string
+		wantErr          bool
+	}{
+		{name: "tilde alone", path: "~", want: home},
+		{name: "tilde slash", path: "~/.csearchindex", want: filepath.Join(home, ".csearchindex")},
+		{name: "nested", path: "~/a/b/c", want: filepath.Join(home, "a/b/c")},
+		{name: "absolute is untouched", path: "/tmp/index", want: "/tmp/index"},
+		{name: "relative is untouched", path: "index", want: "index"},
+		{name: "empty is untouched", path: "", want: ""},
+		{name: "tilde inside is untouched", path: "/tmp/~/index", want: "/tmp/~/index"},
+		{name: "other user is rejected", path: "~someone/index", wantErr: true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := expandHome(tt.path)
+			if tt.wantErr {
+				if err == nil {
+					t.Fatalf("got %q, want an error", got)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("got error %v, want nil", err)
+			}
+			if got != tt.want {
+				t.Errorf("got %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+// TestCsearchExpandsIndexPath checks that the expansion is actually applied to
+// the configured index file.
+func TestCsearchExpandsIndexPath(t *testing.T) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		t.Skipf("no home directory: %v", err)
+	}
+	b, err := (&Csearch{}).New("test", BackendParams{"index_file": "~/.csearchindex"})
+	if err != nil {
+		t.Fatalf("failed to build backend: %v", err)
+	}
+	if got, want := b.(*Csearch).indexFile, filepath.Join(home, ".csearchindex"); got != want {
+		t.Errorf("got %q, want %q", got, want)
+	}
+}
