@@ -11,6 +11,7 @@ import (
 	"log"
 	"os"
 	"os/signal"
+	"regexp"
 	"sort"
 	"strings"
 	"syscall"
@@ -67,7 +68,7 @@ func init() {
 
 	searchCmd.PersistentFlags().StringVarP(&searchBackends, "backends", "b", "", "Comma-separated list of names of the backends to use. The names are defined in your configuration file. If specified, it overrides `default_backends` in the configuration file. \"all\" will use every backend")
 	searchCmd.PersistentFlags().BoolVarP(&flagSearchInFilenames, "search-in-filenames", "F", false, "Search only in file names")
-	searchCmd.PersistentFlags().StringVarP(&flagMatchFilename, "match-filename", "f", "", "Show results only from files whose names match the provided pattern")
+	searchCmd.PersistentFlags().StringVarP(&flagMatchFilename, "match-filename", "f", "", "Show results only from files whose path matches this regexp. Unanchored and case-insensitive, so \".go\" matches anywhere in the path and \"\\.go$\" only at the end")
 	searchCmd.PersistentFlags().IntVarP(&flagSearchContextBefore, "before", "B", 0, "Number of context lines to show before the result")
 	searchCmd.PersistentFlags().IntVarP(&flagSearchContextAfter, "after", "A", 0, "Number of context lines to show after the result")
 	searchCmd.PersistentFlags().BoolVarP(&flagCaseInsensitive, "case-insensitive", "i", false, "Case-insensitive search")
@@ -428,17 +429,33 @@ func checkCapabilities(backends []codesearch.Backend, caps []codesearch.Capabili
 	return errors.New(strings.Join(problems, "\n"))
 }
 
+// compileFilenamePattern turns --match-filename into a matcher. The pattern is
+// an unanchored, case-insensitive regexp, so a plain substring like ".go"
+// still behaves the way the previous strings.Contains did while "\\.go$" or
+// "^cmd/" now mean what they look like. Case sensitivity can be asked for with
+// an inline (?-i).
+func compileFilenamePattern(pattern string) (*regexp.Regexp, error) {
+	if pattern == "" {
+		return nil, nil
+	}
+	re, err := regexp.Compile("(?i)" + pattern)
+	if err != nil {
+		return nil, fmt.Errorf("invalid --match-filename pattern %q: %w", pattern, err)
+	}
+	return re, nil
+}
+
 // selectResults picks the content matches to print, applying the file name
 // filter first so that the limit counts results that are actually shown
 // rather than results merely examined.
-func selectResults(results codesearch.Results, limit uint, matchFilename string) []*codesearch.Result {
+func selectResults(results codesearch.Results, limit uint, matchFilename *regexp.Regexp) []*codesearch.Result {
 	var out []*codesearch.Result
 	for i := range results {
 		res := &results[i]
 		if res.IsFilename {
 			continue
 		}
-		if matchFilename != "" && !strings.Contains(strings.ToLower(res.Path), strings.ToLower(matchFilename)) {
+		if matchFilename != nil && !matchFilename.MatchString(res.Path) {
 			continue
 		}
 		if limit > 0 && uint(len(out)) >= limit {
@@ -506,6 +523,10 @@ var searchCmd = &cobra.Command{
 		if sorter == nil {
 			log.Fatalf("Invalid value for --sort")
 		}
+		matchFilename, err := compileFilenamePattern(flagMatchFilename)
+		if err != nil {
+			logrus.Fatal(err)
+		}
 
 		searchString := strings.Join(args, " ")
 		fmt.Fprintf(os.Stderr, "Searching %q on %q\n", searchString, backendNames)
@@ -560,7 +581,7 @@ var searchCmd = &cobra.Command{
 			if flagSearchInFilenames {
 				o.selected = selectFilenames(results, flagLimit)
 			} else {
-				o.selected = selectResults(results, flagLimit, flagMatchFilename)
+				o.selected = selectResults(results, flagLimit, matchFilename)
 			}
 			totalResults += len(o.selected)
 		}

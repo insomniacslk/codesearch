@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -220,7 +221,7 @@ func TestSelectResultsLimitCountsPrinted(t *testing.T) {
 		contentResult("e/want.go", 5),
 		contentResult("f/want.go", 6),
 	}
-	got := selectResults(results, 2, ".go")
+	got := selectResults(results, 2, mustPattern(t, ".go"))
 	if len(got) != 2 {
 		t.Fatalf("got %d results, want 2", len(got))
 	}
@@ -250,14 +251,14 @@ func TestSelectResults(t *testing.T) {
 	}{
 		{"no limit no filter", 0, "", []string{"one.go", "two.js", "three.go"}},
 		{"limit only", 2, "", []string{"one.go", "two.js"}},
-		{"filter only", 0, ".go", []string{"one.go", "three.go"}},
+		{"filter only", 0, `\.go`, []string{"one.go", "three.go"}},
 		{"limit above available", 99, "", []string{"one.go", "two.js", "three.go"}},
-		{"filter matches nothing", 0, ".rb", nil},
-		{"filter is case insensitive", 0, ".GO", []string{"one.go", "three.go"}},
+		{"filter matches nothing", 0, `\.rb`, nil},
+		{"filter is case insensitive", 0, `\.GO`, []string{"one.go", "three.go"}},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			var got []string
-			for _, r := range selectResults(results, tt.limit, tt.matchFilename) {
+			for _, r := range selectResults(results, tt.limit, mustPattern(t, tt.matchFilename)) {
 				got = append(got, r.Path)
 			}
 			if !equalStrings(got, tt.want) {
@@ -275,7 +276,7 @@ func TestSelectResultsSkipsFilenameOnlyMatches(t *testing.T) {
 		{Path: "a.go", IsFilename: true},
 		{Path: "b.go", IsFilename: true},
 	}
-	if got := selectResults(results, 0, ""); len(got) != 0 {
+	if got := selectResults(results, 0, nil); len(got) != 0 {
 		t.Errorf("got %d results, want 0", len(got))
 	}
 }
@@ -808,5 +809,67 @@ func TestPrintedOutputIsPlainWhenColourIsOff(t *testing.T) {
 		if !strings.Contains(out, want) {
 			t.Errorf("output does not contain %q:\n%s", want, out)
 		}
+	}
+}
+
+func mustPattern(t *testing.T, pattern string) *regexp.Regexp {
+	t.Helper()
+	re, err := compileFilenamePattern(pattern)
+	if err != nil {
+		t.Fatalf("failed to compile %q: %v", pattern, err)
+	}
+	return re
+}
+
+func TestCompileFilenamePattern(t *testing.T) {
+	results := codesearch.Results{
+		contentResult("cmd/cs/main.go", 1),
+		contentResult("pkg/codesearch/github.go", 2),
+		contentResult("README.md", 3),
+		contentResult("docs/GO.md", 4),
+	}
+	for _, tt := range []struct {
+		name, pattern string
+		want          []string
+	}{
+		{"empty matches everything", "", []string{"cmd/cs/main.go", "pkg/codesearch/github.go", "README.md", "docs/GO.md"}},
+		{"substring still works", ".go", []string{"cmd/cs/main.go", "pkg/codesearch/github.go", "docs/GO.md"}},
+		{"anchored extension", `\.go$`, []string{"cmd/cs/main.go", "pkg/codesearch/github.go"}},
+		{"anchored prefix", "^cmd/", []string{"cmd/cs/main.go"}},
+		{"alternation", `\.(md)$`, []string{"README.md", "docs/GO.md"}},
+		{"character class", `^[dp]`, []string{"pkg/codesearch/github.go", "docs/GO.md"}},
+		{"case insensitive by default", `readme`, []string{"README.md"}},
+		{"case sensitivity can be requested", `(?-i)readme`, nil},
+		{"matches nothing", `\.rb$`, nil},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			var got []string
+			for _, r := range selectResults(results, 0, mustPattern(t, tt.pattern)) {
+				got = append(got, r.Path)
+			}
+			if !equalStrings(got, tt.want) {
+				t.Errorf("got %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestCompileFilenamePatternRejectsBadRegexp(t *testing.T) {
+	re, err := compileFilenamePattern("[unclosed")
+	if err == nil {
+		t.Fatalf("got %v, want an error for an invalid regexp", re)
+	}
+	if !strings.Contains(err.Error(), "[unclosed") {
+		t.Errorf("error %q does not quote the pattern", err)
+	}
+}
+
+func TestCompileFilenamePatternEmptyIsNil(t *testing.T) {
+	re, err := compileFilenamePattern("")
+	if err != nil {
+		t.Fatalf("got error %v, want nil", err)
+	}
+	if re != nil {
+		t.Errorf("got %v, want nil for an empty pattern", re)
 	}
 }

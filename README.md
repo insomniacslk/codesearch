@@ -49,6 +49,11 @@ Other general features:
 * [ ] Custom colour scheme
 
 
+`--match-filename`/`-f` filters results by path using an unanchored,
+case-insensitive regexp, so `-f .go` matches anywhere in the path while
+`-f '\.go$'` only matches the extension. Add an inline `(?-i)` to make it case
+sensitive.
+
 NOTE: there is no common syntax for searching, so for advanced queries you must know
 each search engine's syntax and capabilities
 
