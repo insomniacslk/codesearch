@@ -16,6 +16,7 @@ import (
 
 	"github.com/fatih/color"
 	"github.com/insomniacslk/codesearch/pkg/codesearch"
+	"github.com/kirsle/configdir"
 	"github.com/spf13/viper"
 )
 
@@ -62,6 +63,15 @@ func writeConfig(t *testing.T, content string) string {
 	return path
 }
 
+// useConfigDir points the config search path at dir. configdir reads
+// XDG_CONFIG_HOME once in its own init, so it has to be told to reread it.
+func useConfigDir(t *testing.T, dir string) {
+	t.Helper()
+	t.Setenv("XDG_CONFIG_HOME", dir)
+	configdir.Refresh()
+	t.Cleanup(configdir.Refresh)
+}
+
 // setFlag simulates the flag being passed on the command line.
 func setFlag(t *testing.T, name, value string) {
 	t.Helper()
@@ -93,7 +103,9 @@ func TestConfigFileFlagIsRead(t *testing.T) {
 	resetConfigState(t)
 	configFile = writeConfig(t, testConfig)
 
-	initConfig()
+	if err := loadConfig(); err != nil {
+		t.Fatalf("failed to load config: %v", err)
+	}
 
 	cfg := getConfig()
 	if got, want := len(cfg.Backends), 1; got != want {
@@ -127,7 +139,9 @@ defaults:
   match_filename: "*.go"
 `)
 
-	initConfig()
+	if err := loadConfig(); err != nil {
+		t.Fatalf("failed to load config: %v", err)
+	}
 
 	if !flagStats {
 		t.Error("stats: got false, want true")
@@ -163,7 +177,9 @@ defaults:
 	setFlag(t, "limit", "10")
 	setFlag(t, "sort", "a-z")
 
-	initConfig()
+	if err := loadConfig(); err != nil {
+		t.Fatalf("failed to load config: %v", err)
+	}
 
 	if got, want := flagLimit, uint(10); got != want {
 		t.Errorf("limit: got %d, want %d", got, want)
@@ -181,7 +197,9 @@ func TestFlagDefaultsWhenAbsentEverywhere(t *testing.T) {
 	resetConfigState(t)
 	configFile = writeConfig(t, testConfig)
 
-	initConfig()
+	if err := loadConfig(); err != nil {
+		t.Fatalf("failed to load config: %v", err)
+	}
 
 	if got, want := flagLimit, uint(0); got != want {
 		t.Errorf("limit: got %d, want %d", got, want)
@@ -960,7 +978,9 @@ func TestContextFlag(t *testing.T) {
 				setFlag(t, name, value)
 			}
 
-			initConfig()
+			if err := loadConfig(); err != nil {
+				t.Fatalf("failed to load config: %v", err)
+			}
 
 			if flagSearchContextBefore != tt.wantBefore {
 				t.Errorf("before: got %d, want %d", flagSearchContextBefore, tt.wantBefore)
@@ -970,4 +990,115 @@ func TestContextFlag(t *testing.T) {
 			}
 		})
 	}
+}
+
+// runCommand executes the CLI in-process with the given arguments. stdout and
+// stderr are captured separately, because which stream something lands on is
+// part of the contract: config-example has to be redirectable into a file.
+func runCommand(t *testing.T, args ...string) (stdout, stderr string, err error) {
+	t.Helper()
+	var out, errOut bytes.Buffer
+	rootCmd.SetOut(&out)
+	rootCmd.SetErr(&errOut)
+	rootCmd.SetArgs(args)
+	t.Cleanup(func() {
+		rootCmd.SetOut(nil)
+		rootCmd.SetErr(nil)
+		rootCmd.SetArgs(nil)
+	})
+	err = rootCmd.Execute()
+	return out.String(), errOut.String(), err
+}
+
+// TestConfigExampleWithoutConfigFile covers the chicken and egg: config-example
+// exists to produce a config file, so it must not require one. The config was
+// previously loaded through cobra.OnInitialize, which runs for every command.
+func TestConfigExampleWithoutConfigFile(t *testing.T) {
+	resetConfigState(t)
+	// a config dir that certainly holds no config
+	useConfigDir(t, t.TempDir())
+
+	out, errOut, err := runCommand(t, "config-example")
+	if err != nil {
+		t.Fatalf("got error %v, want nil", err)
+	}
+	for _, want := range []string{"default_backends", "backends:", "type: github", "index_file"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("stdout does not contain %q", want)
+		}
+	}
+	// it has to be on stdout, or "cs config-example > config.yml" writes an
+	// empty file
+	if errOut != "" {
+		t.Errorf("wrote %q to stderr, want everything on stdout", errOut)
+	}
+}
+
+// TestConfigExampleOutputIsUsable checks the printed example is valid YAML that
+// the config loader accepts, so following the error message actually works.
+func TestConfigExampleOutputIsUsable(t *testing.T) {
+	resetConfigState(t)
+	useConfigDir(t, t.TempDir())
+	out, _, err := runCommand(t, "config-example")
+	if err != nil {
+		t.Fatalf("got error %v, want nil", err)
+	}
+
+	resetConfigState(t)
+	configFile = writeConfig(t, out)
+	if err := loadConfig(); err != nil {
+		t.Fatalf("the example config does not load: %v", err)
+	}
+	if len(getConfig().Backends) == 0 {
+		t.Error("the example config declares no backends")
+	}
+}
+
+// TestCommandsNeedingConfigReportItHelpfully checks that the commands that do
+// need a config say where they looked and how to create one.
+func TestCommandsNeedingConfigReportItHelpfully(t *testing.T) {
+	for _, args := range [][]string{{"list"}, {"search", "needle"}} {
+		t.Run(args[0], func(t *testing.T) {
+			resetConfigState(t)
+			dir := t.TempDir()
+			useConfigDir(t, dir)
+
+			_, _, err := runCommand(t, args...)
+			if err == nil {
+				t.Fatal("got nil error, want a failure")
+			}
+			msg := err.Error()
+			if !strings.Contains(msg, dir) {
+				t.Errorf("error %q does not say where it looked", msg)
+			}
+			if !strings.Contains(msg, "config-example") {
+				t.Errorf("error %q does not say how to create a config", msg)
+			}
+		})
+	}
+}
+
+func TestLoadConfigErrorsAreDescriptive(t *testing.T) {
+	t.Run("malformed yaml", func(t *testing.T) {
+		resetConfigState(t)
+		configFile = writeConfig(t, "default_backends: [oops\n  bad indent:\n")
+		err := loadConfig()
+		if err == nil {
+			t.Fatal("got nil error, want a failure")
+		}
+		if !strings.Contains(err.Error(), configFile) {
+			t.Errorf("error %q does not name the file", err)
+		}
+	})
+	t.Run("invalid config", func(t *testing.T) {
+		resetConfigState(t)
+		configFile = writeConfig(t, "default_backends: [nosuchbackend]\nbackends: {}\n")
+		err := loadConfig()
+		if err == nil {
+			t.Fatal("got nil error, want a failure")
+		}
+		if !strings.Contains(err.Error(), "nosuchbackend") {
+			t.Errorf("error %q does not name the offending backend", err)
+		}
+	})
 }

@@ -11,6 +11,7 @@ import (
 	"log"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"regexp"
 	"sort"
 	"strings"
@@ -60,8 +61,6 @@ func getConfig() *codesearch.Config {
 }
 
 func init() {
-	cobra.OnInitialize(initConfig)
-
 	rootCmd.PersistentFlags().StringVarP(&configFile, "config", "c", "", "Configuration file")
 	rootCmd.PersistentFlags().BoolVarP(&flagDebug, "debug", "d", false, "Print debug messages")
 	rootCmd.PersistentFlags().BoolVarP(&flagStats, "stats", "S", false, "Print stats")
@@ -157,7 +156,25 @@ func resolveFlags() {
 	}
 }
 
-func initConfig() {
+// configPath is where the configuration is expected, for error messages.
+func configPath() string {
+	if configFile != "" {
+		return configFile
+	}
+	return filepath.Join(configdir.LocalConfig(progname), "config.yml")
+}
+
+// requireConfig loads the configuration for the commands that need one. It is
+// deliberately not attached to every command: config-example exists to produce
+// the file in the first place, so demanding one before it can run is circular.
+func requireConfig(cmd *cobra.Command, _ []string) error {
+	// the flags parsed, so anything failing from here is not a usage problem
+	// and printing the full usage text would only bury the real message
+	cmd.SilenceUsage = true
+	return loadConfig()
+}
+
+func loadConfig() error {
 	if flagDebug {
 		logrus.SetLevel(logrus.DebugLevel)
 	}
@@ -174,27 +191,29 @@ func initConfig() {
 		// SetConfigFile reports a missing file as a path error rather than as
 		// ConfigFileNotFoundError, which only covers the search-path case.
 		if _, ok := err.(viper.ConfigFileNotFoundError); ok || errors.Is(err, fs.ErrNotExist) {
-			// TODO create new config file
-			logrus.Fatalf("Config file not found")
+			return fmt.Errorf("no configuration file at %s\n\nCreate one with:\n    %s config-example > %s",
+				configPath(), progname, configPath())
 		}
-		logrus.Fatalf("Failed to read config file: %v", err)
+		return fmt.Errorf("failed to read config file %s: %w", configPath(), err)
 	}
 	logrus.Debugf("Using config file %q", viper.ConfigFileUsed())
 
 	config := getConfig()
 	if err := viper.Unmarshal(config); err != nil {
-		logrus.Fatalf("Failed to unmarshal config: %v", err)
+		return fmt.Errorf("failed to parse config file %s: %w", viper.ConfigFileUsed(), err)
 	}
 	if err := config.Validate(); err != nil {
-		logrus.Fatalf("Invalid config: %v", err)
+		return fmt.Errorf("invalid config file %s: %w", viper.ConfigFileUsed(), err)
 	}
 
 	resolveFlags()
+	return nil
 }
 
 var listCmd = &cobra.Command{
-	Use:   "list",
-	Short: "List the available backends",
+	Use:               "list",
+	Short:             "List the available backends",
+	PersistentPreRunE: requireConfig,
 	Run: func(cmd *cobra.Command, args []string) {
 		config := getConfig()
 		backendNames := make([]string, 0, len(config.Backends))
@@ -212,7 +231,9 @@ var configExampleCmd = &cobra.Command{
 	Use:   "config-example",
 	Short: "Print an example config file",
 	Run: func(cmd *cobra.Command, args []string) {
-		fmt.Println(configFileExample)
+		// explicitly stdout: cobra's own Print helpers target stderr, which
+		// would break "cs config-example > config.yml"
+		fmt.Fprintln(cmd.OutOrStdout(), configFileExample)
 	},
 }
 
@@ -509,9 +530,10 @@ func selectFilenames(results codesearch.Results, limit uint) []*codesearch.Resul
 }
 
 var searchCmd = &cobra.Command{
-	Use:   "search",
-	Short: "Search code in the specified backends",
-	Args:  cobra.MinimumNArgs(1),
+	Use:               "search",
+	Short:             "Search code in the specified backends",
+	Args:              cobra.MinimumNArgs(1),
+	PersistentPreRunE: requireConfig,
 	Run: func(cmd *cobra.Command, args []string) {
 		config := getConfig()
 
@@ -662,6 +684,7 @@ var rootCmd = &cobra.Command{
 
 func main() {
 	if err := rootCmd.Execute(); err != nil {
-		logrus.Fatalf("Failed to execute command: %v", err)
+		// cobra has already printed the message
+		os.Exit(1)
 	}
 }
