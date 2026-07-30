@@ -220,6 +220,27 @@ func repoNameFromRes(res *codesearch.Result) string {
 	return repoName
 }
 
+// splitHighlight cuts the line into the text before, inside and after the
+// match. The offsets come from the backend, so they are clamped rather than
+// trusted: an out-of-range highlight would otherwise panic in the printer,
+// after the search has already succeeded.
+func splitHighlight(line string, h [2]int) (head, match, tail string) {
+	start, end := h[0], h[1]
+	if start < 0 {
+		start = 0
+	}
+	if start > len(line) {
+		start = len(line)
+	}
+	if end < start {
+		end = start
+	}
+	if end > len(line) {
+		end = len(line)
+	}
+	return line[:start], line[start:end], line[end:]
+}
+
 // searchOutcome is what one backend produced, including a failure. Failures
 // are carried rather than raised so that one unreachable backend does not
 // discard the results of the others.
@@ -448,7 +469,7 @@ var searchCmd = &cobra.Command{
 					if len(res.Context.After) > 0 {
 						after = "\n" + after
 					}
-					start, end := res.Highlight[0], res.Highlight[1]
+					head, match, tail := splitHighlight(res.Line, res.Highlight)
 					fmt.Printf(
 						"%s:%s:%s (%s)\n\n%s%s: %s%s\n\n",
 						res.Backend,
@@ -457,7 +478,7 @@ var searchCmd = &cobra.Command{
 						textBold.Sprint(res.Branch),
 						before,
 						textBoldGreen.Sprint(res.Lineno),
-						res.Line[:start]+textBoldRed.Sprint(res.Line[start:end])+res.Line[end:],
+						head+textBoldRed.Sprint(match)+tail,
 						after,
 					)
 				}

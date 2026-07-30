@@ -303,6 +303,7 @@ func (g *Github) toResult(ctx context.Context, client *github.Client, csresults 
 					FileURL:   fileURLwithLineno.String(),
 					Owner:     res.GetRepository().GetOwner().GetLogin(),
 					RepoName:  res.GetRepository().GetName(),
+					Branch:    res.GetRepository().GetDefaultBranch(),
 				}
 				results = append(results, result)
 			}

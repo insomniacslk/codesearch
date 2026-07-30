@@ -104,12 +104,21 @@ func contextLines(lines []string, lineno, before, after int) ([]string, []string
 	return lines[beforeStart:beforeEnd], lines[afterStart:afterEnd]
 }
 
-func removePathPrefix(s, prefix string) string {
-	if strings.HasPrefix(s, prefix) {
-		s = s[len(prefix):]
-		s = strings.TrimLeft(s, "/")
+// hasPathPrefix reports whether s is prefix or sits underneath it, comparing
+// whole path components so that "/src/repo" does not match "/src/repo2".
+func hasPathPrefix(s, prefix string) bool {
+	prefix = strings.TrimRight(prefix, "/")
+	if prefix == "" {
+		return false
 	}
-	return s
+	return s == prefix || strings.HasPrefix(s, prefix+"/")
+}
+
+func removePathPrefix(s, prefix string) string {
+	if !hasPathPrefix(s, prefix) {
+		return s
+	}
+	return strings.TrimPrefix(strings.TrimPrefix(s, strings.TrimRight(prefix, "/")), "/")
 }
 
 func (g *Csearch) Search(searchString string, opts ...Opt) (Results, error) {
@@ -234,12 +243,12 @@ func (g *Csearch) toResult(ctx context.Context, pattern string, ix *index.Index,
 			if newlineIdx != -1 {
 				line = line[:newlineIdx]
 			}
-			// find indexed path
+			// find the indexed path this file sits under, preferring the
+			// longest match so nested indexed roots resolve to the deeper one
 			var indexedPath string
 			for _, p := range ix.Paths() {
-				if strings.HasPrefix(name, p) {
+				if hasPathPrefix(name, p) && len(p) > len(indexedPath) {
 					indexedPath = p
-					break
 				}
 			}
 			if indexedPath == "" {

@@ -295,3 +295,41 @@ func TestRemovePathPrefix(t *testing.T) {
 		}
 	}
 }
+
+// TestHasPathPrefix covers the component-boundary comparison: a plain
+// strings.HasPrefix makes "/src/repo" look like a parent of "/src/repo2".
+func TestHasPathPrefix(t *testing.T) {
+	for _, tt := range []struct {
+		s, prefix string
+		want      bool
+	}{
+		{"/src/repo/main.go", "/src/repo", true},
+		{"/src/repo", "/src/repo", true},
+		{"/src/repo/main.go", "/src/repo/", true},
+		{"/src/repo2/main.go", "/src/repo", false},
+		{"/src/repository/main.go", "/src/repo", false},
+		{"/other/main.go", "/src/repo", false},
+		{"/src/repo/main.go", "", false},
+	} {
+		if got := hasPathPrefix(tt.s, tt.prefix); got != tt.want {
+			t.Errorf("hasPathPrefix(%q, %q) = %v, want %v", tt.s, tt.prefix, got, tt.want)
+		}
+	}
+}
+
+// TestRemovePathPrefixRespectsComponents is the same boundary problem as it
+// shows up in the reported path: a sibling directory sharing a prefix used to
+// have its name mangled instead of being left alone.
+func TestRemovePathPrefixRespectsComponents(t *testing.T) {
+	for _, tt := range []struct {
+		s, prefix, want string
+	}{
+		{"/src/repo2/main.go", "/src/repo", "/src/repo2/main.go"},
+		{"/src/repository/a.go", "/src/repo", "/src/repository/a.go"},
+		{"/src/repo/main.go", "/src/repo", "main.go"},
+	} {
+		if got := removePathPrefix(tt.s, tt.prefix); got != tt.want {
+			t.Errorf("removePathPrefix(%q, %q) = %q, want %q", tt.s, tt.prefix, got, tt.want)
+		}
+	}
+}

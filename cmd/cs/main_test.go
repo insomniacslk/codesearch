@@ -527,3 +527,38 @@ func TestRunSearchesRecordsDuration(t *testing.T) {
 		t.Errorf("got duration %s, want at least 20ms", outcomes[0].duration)
 	}
 }
+
+// TestSplitHighlight checks that a highlight range reported by a backend can
+// never crash the printer, however malformed it is.
+func TestSplitHighlight(t *testing.T) {
+	for _, tt := range []struct {
+		name              string
+		line              string
+		h                 [2]int
+		head, match, tail string
+	}{
+		{"normal", "func needle() {}", [2]int{5, 11}, "func ", "needle", "() {}"},
+		{"start of line", "needle here", [2]int{0, 6}, "", "needle", " here"},
+		{"end of line", "here needle", [2]int{5, 11}, "here ", "needle", ""},
+		{"whole line", "needle", [2]int{0, 6}, "", "needle", ""},
+		{"empty range", "needle", [2]int{3, 3}, "nee", "", "dle"},
+		{"negative start", "needle", [2]int{-1, 3}, "", "nee", "dle"},
+		{"end past line", "needle", [2]int{3, 99}, "nee", "dle", ""},
+		{"start past line", "needle", [2]int{99, 120}, "needle", "", ""},
+		{"inverted range", "needle", [2]int{4, 2}, "need", "", "le"},
+		{"empty line", "", [2]int{0, 5}, "", "", ""},
+		{"both negative", "needle", [2]int{-5, -2}, "", "", "needle"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			head, match, tail := splitHighlight(tt.line, tt.h)
+			if head != tt.head || match != tt.match || tail != tt.tail {
+				t.Errorf("got (%q, %q, %q), want (%q, %q, %q)",
+					head, match, tail, tt.head, tt.match, tt.tail)
+			}
+			// the three pieces must always reassemble into the original line
+			if got := head + match + tail; got != tt.line {
+				t.Errorf("pieces rejoin to %q, want %q", got, tt.line)
+			}
+		})
+	}
+}
