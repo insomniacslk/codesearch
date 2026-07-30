@@ -5,10 +5,21 @@ import (
 	"time"
 )
 
+// Capability is an optional search feature. Backends declare the ones they
+// actually implement so the CLI can reject options that would otherwise be
+// accepted and then silently ignored.
+type Capability string
+
+const (
+	CapCaseInsensitive   Capability = "case-insensitive search"
+	CapSearchInFilenames Capability = "searching in file names"
+)
+
 type Backend interface {
 	New(name string, params BackendParams) (Backend, error)
 	Name() string
 	Type() string
+	Supports(c Capability) bool
 	SetLinesBefore(n int)
 	SetLinesAfter(n int)
 	SetCaseInsensitive(v bool)

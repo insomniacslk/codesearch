@@ -53,6 +53,14 @@ func (g *Csearch) Type() string {
 	return BackendTypeCsearch
 }
 
+func (g *Csearch) Supports(c Capability) bool {
+	switch c {
+	case CapCaseInsensitive, CapSearchInFilenames:
+		return true
+	}
+	return false
+}
+
 func (g *Csearch) SetCaseInsensitive(v bool) {
 	g.caseInsensitive = v
 }

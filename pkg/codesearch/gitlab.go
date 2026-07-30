@@ -68,6 +68,14 @@ func (g *Gitlab) Type() string {
 	return BackendTypeGitlab
 }
 
+// Supports implements Backend. GitLab's advanced search offers no
+// case-sensitivity switch, and the backend does not implement a
+// file-name-only mode; file name matches surface on their own as part of a
+// normal search and are reported with Result.IsFilename set.
+func (g *Gitlab) Supports(Capability) bool {
+	return false
+}
+
 func (g *Gitlab) SetCaseInsensitive(v bool) {
 	g.caseInsensitive = v
 }

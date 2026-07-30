@@ -220,6 +220,44 @@ func repoNameFromRes(res *codesearch.Result) string {
 	return repoName
 }
 
+// capabilityFlags names the command line flag that requests each capability,
+// so an unsupported combination can be reported in the user's terms.
+var capabilityFlags = map[codesearch.Capability]string{
+	codesearch.CapCaseInsensitive:   "--case-insensitive/-i",
+	codesearch.CapSearchInFilenames: "--search-in-filenames/-F",
+}
+
+func requestedCapabilities() []codesearch.Capability {
+	var caps []codesearch.Capability
+	if flagCaseInsensitive {
+		caps = append(caps, codesearch.CapCaseInsensitive)
+	}
+	if flagSearchInFilenames {
+		caps = append(caps, codesearch.CapSearchInFilenames)
+	}
+	return caps
+}
+
+// checkCapabilities reports every backend that cannot honour a requested
+// option. Silently ignoring these produces results that look complete but
+// quietly answer a different question.
+func checkCapabilities(backends []codesearch.Backend, caps []codesearch.Capability) error {
+	var problems []string
+	for _, b := range backends {
+		for _, c := range caps {
+			if !b.Supports(c) {
+				problems = append(problems, fmt.Sprintf(
+					"  backend %q (type %q) does not support %s, requested by %s",
+					b.Name(), b.Type(), c, capabilityFlags[c]))
+			}
+		}
+	}
+	if len(problems) == 0 {
+		return nil
+	}
+	return errors.New(strings.Join(problems, "\n"))
+}
+
 // selectResults picks the content matches to print, applying the file name
 // filter first so that the limit counts results that are actually shown
 // rather than results merely examined.
@@ -322,6 +360,11 @@ var searchCmd = &cobra.Command{
 		}
 		if len(backends) == 0 {
 			logrus.Fatal("No backends specified")
+		}
+		if err := checkCapabilities(backends, requestedCapabilities()); err != nil {
+			// printed rather than logged so the per-backend list stays readable
+			fmt.Fprintf(os.Stderr, "Requested options are not supported:\n%v\n", err)
+			os.Exit(1)
 		}
 		type stat struct {
 			name     string

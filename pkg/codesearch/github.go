@@ -58,6 +58,12 @@ func (g *Github) Type() string {
 	return BackendTypeGithub
 }
 
+// Supports implements Backend. The GitHub search API exposes neither a
+// case-sensitivity switch nor a file-name-only mode.
+func (g *Github) Supports(Capability) bool {
+	return false
+}
+
 func (g *Github) SetCaseInsensitive(v bool) {
 	g.caseInsensitive = v
 }

@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/insomniacslk/codesearch/pkg/codesearch"
 	"github.com/spf13/viper"
@@ -318,4 +319,114 @@ func equalStrings(a, b []string) bool {
 		}
 	}
 	return true
+}
+
+type fakeBackend struct {
+	name string
+	caps map[codesearch.Capability]bool
+}
+
+func (f *fakeBackend) New(string, codesearch.BackendParams) (codesearch.Backend, error) {
+	return f, nil
+}
+func (f *fakeBackend) Name() string                          { return f.name }
+func (f *fakeBackend) Type() string                          { return "fake" }
+func (f *fakeBackend) Supports(c codesearch.Capability) bool { return f.caps[c] }
+func (f *fakeBackend) SetLinesBefore(int)                    {}
+func (f *fakeBackend) SetLinesAfter(int)                     {}
+func (f *fakeBackend) SetCaseInsensitive(bool)               {}
+func (f *fakeBackend) SetSearchInFilenames(bool)             {}
+func (f *fakeBackend) SetTimeout(time.Duration)              {}
+func (f *fakeBackend) Search(string, ...codesearch.Opt) (codesearch.Results, error) {
+	return nil, nil
+}
+
+func TestCheckCapabilities(t *testing.T) {
+	full := &fakeBackend{name: "full", caps: map[codesearch.Capability]bool{
+		codesearch.CapCaseInsensitive:   true,
+		codesearch.CapSearchInFilenames: true,
+	}}
+	none := &fakeBackend{name: "none", caps: map[codesearch.Capability]bool{}}
+
+	for _, tt := range []struct {
+		name     string
+		backends []codesearch.Backend
+		caps     []codesearch.Capability
+		wantErr  bool
+		wantMsg  []string
+	}{
+		{
+			name:     "nothing requested",
+			backends: []codesearch.Backend{none},
+			caps:     nil,
+		},
+		{
+			name:     "supported",
+			backends: []codesearch.Backend{full},
+			caps:     []codesearch.Capability{codesearch.CapCaseInsensitive},
+		},
+		{
+			name:     "unsupported names the backend and the flag",
+			backends: []codesearch.Backend{none},
+			caps:     []codesearch.Capability{codesearch.CapCaseInsensitive},
+			wantErr:  true,
+			wantMsg:  []string{"none", "--case-insensitive/-i"},
+		},
+		{
+			name:     "one unsupported among several",
+			backends: []codesearch.Backend{full, none},
+			caps:     []codesearch.Capability{codesearch.CapSearchInFilenames},
+			wantErr:  true,
+			wantMsg:  []string{"none", "--search-in-filenames/-F"},
+		},
+		{
+			name:     "every unsupported combination is listed",
+			backends: []codesearch.Backend{none},
+			caps: []codesearch.Capability{
+				codesearch.CapCaseInsensitive, codesearch.CapSearchInFilenames,
+			},
+			wantErr: true,
+			wantMsg: []string{"--case-insensitive/-i", "--search-in-filenames/-F"},
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			err := checkCapabilities(tt.backends, tt.caps)
+			if tt.wantErr && err == nil {
+				t.Fatal("got nil error, want a failure")
+			}
+			if !tt.wantErr && err != nil {
+				t.Fatalf("got error %v, want nil", err)
+			}
+			for _, want := range tt.wantMsg {
+				if !strings.Contains(err.Error(), want) {
+					t.Errorf("error %q does not mention %q", err, want)
+				}
+			}
+		})
+	}
+}
+
+func TestRequestedCapabilities(t *testing.T) {
+	defer func() { flagCaseInsensitive, flagSearchInFilenames = false, false }()
+
+	flagCaseInsensitive, flagSearchInFilenames = false, false
+	if got := requestedCapabilities(); len(got) != 0 {
+		t.Errorf("got %v, want none", got)
+	}
+	flagCaseInsensitive, flagSearchInFilenames = true, true
+	if got := requestedCapabilities(); len(got) != 2 {
+		t.Errorf("got %v, want two capabilities", got)
+	}
+}
+
+// TestCapabilityFlagsAreNamed makes sure every capability has a flag name, so
+// the error message never has a blank where the flag should be.
+func TestCapabilityFlagsAreNamed(t *testing.T) {
+	for _, c := range []codesearch.Capability{
+		codesearch.CapCaseInsensitive, codesearch.CapSearchInFilenames,
+	} {
+		if capabilityFlags[c] == "" {
+			t.Errorf("capability %q has no flag name", c)
+		}
+	}
 }

@@ -33,7 +33,15 @@ Feature matrix:
 | Show context lines       | ✅       | max 3  | ✅      |
 | Full file fetching       | ✅       | ❌     | ✅      |
 | Search by file name      | ✅       | ✅     | ✅      |
-| Search in file names     | ❌       | ✅     | ✅      |
+| Search in file names     | ❌       | ❌     | ✅      |
+
+Options that a backend cannot honour are rejected rather than ignored: asking
+for `-i` or `-F` on a backend that does not implement them fails with a message
+naming the backend and the flag, instead of silently returning results for a
+different query.
+
+Note that GitLab still reports matches that occur in a file name as part of an
+ordinary search, it just has no file-name-only mode to select with `-F`.
 
 Other general features:
 * [ ] Common syntax for all backends
