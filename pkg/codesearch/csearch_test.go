@@ -2,8 +2,13 @@ package codesearch
 
 import (
 	"fmt"
+	"os"
+	"path/filepath"
+	"sort"
 	"strings"
 	"testing"
+
+	"github.com/google/codesearch/index"
 )
 
 // TestContextLinesNeverPanics covers the regression where the after-context
@@ -149,6 +154,144 @@ func TestClamp(t *testing.T) {
 		if got := clamp(tt.v, tt.lo, tt.hi); got != tt.want {
 			t.Errorf("clamp(%d, %d, %d) = %d, want %d",
 				tt.v, tt.lo, tt.hi, got, tt.want)
+		}
+	}
+}
+
+// newTestIndex writes files into a temporary tree and builds a real cindex
+// over it, so the csearch backend can be exercised end to end.
+func newTestIndex(t *testing.T, files map[string]string) (indexFile, root string) {
+	t.Helper()
+	root = t.TempDir()
+	for name, content := range files {
+		p := filepath.Join(root, name)
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			t.Fatalf("failed to create dir for %q: %v", name, err)
+		}
+		if err := os.WriteFile(p, []byte(content), 0o644); err != nil {
+			t.Fatalf("failed to write %q: %v", name, err)
+		}
+	}
+	indexFile = filepath.Join(t.TempDir(), "csearchindex")
+	iw := index.Create(indexFile)
+	iw.AddPaths([]string{root})
+	err := filepath.Walk(root, func(p string, info os.FileInfo, err error) error {
+		if err == nil && !info.IsDir() {
+			iw.AddFile(p)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("failed to index tree: %v", err)
+	}
+	iw.Flush()
+	return indexFile, root
+}
+
+func newCsearchBackend(t *testing.T, indexFile string) *Csearch {
+	t.Helper()
+	b, err := (&Csearch{}).New("test", BackendParams{"index_file": indexFile})
+	if err != nil {
+		t.Fatalf("failed to build backend: %v", err)
+	}
+	return b.(*Csearch)
+}
+
+func resultPaths(results Results) []string {
+	paths := make([]string, 0, len(results))
+	for _, r := range results {
+		paths = append(paths, r.Path)
+	}
+	sort.Strings(paths)
+	return paths
+}
+
+var filenameTree = map[string]string{
+	"main.go":              "package main\n",
+	"cmd/cs/main.go":       "package main\n",
+	"pkg/thing/handler.go": "package thing\n",
+	"README.md":            "docs\n",
+}
+
+func TestCsearchSearchInFilenames(t *testing.T) {
+	indexFile, _ := newTestIndex(t, filenameTree)
+	for _, tt := range []struct {
+		name, pattern string
+		want          []string
+	}{
+		{"base name", "handler.go", []string{"pkg/thing/handler.go"}},
+		{"matches every path component", "main.go", []string{"cmd/cs/main.go", "main.go"}},
+		{"directory component", "cmd/cs", []string{"cmd/cs/main.go"}},
+		{"extension", `\.md$`, []string{"README.md"}},
+		{"no match", "nosuchfile", nil},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			results, err := newCsearchBackend(t, indexFile).Search(tt.pattern, WithSearchInFilenames(true))
+			if err != nil {
+				t.Fatalf("search failed: %v", err)
+			}
+			if got := resultPaths(results); !equalLines(got, tt.want) {
+				t.Errorf("got %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+// TestCsearchSearchInFilenamesSkipsDirectories checks that a pattern matching
+// a directory name does not report the directory itself as a hit.
+func TestCsearchSearchInFilenamesSkipsDirectories(t *testing.T) {
+	indexFile, _ := newTestIndex(t, filenameTree)
+	results, err := newCsearchBackend(t, indexFile).Search("thing", WithSearchInFilenames(true))
+	if err != nil {
+		t.Fatalf("search failed: %v", err)
+	}
+	if got, want := resultPaths(results), []string{"pkg/thing/handler.go"}; !equalLines(got, want) {
+		t.Errorf("got %q, want %q", got, want)
+	}
+}
+
+// TestCsearchSearchInFilenamesUnreadableDir is the regression test for the
+// walk callback dereferencing info before checking err. filepath.Walk passes a
+// nil info alongside the error for a directory it cannot read.
+func TestCsearchSearchInFilenamesUnreadableDir(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("running as root, permissions are not enforced")
+	}
+	indexFile, root := newTestIndex(t, filenameTree)
+
+	locked := filepath.Join(root, "locked")
+	if err := os.MkdirAll(filepath.Join(locked, "inner"), 0o755); err != nil {
+		t.Fatalf("failed to create locked dir: %v", err)
+	}
+	// readable but not traversable: Walk can list the entries but cannot
+	// lstat them, which is the case where it passes a nil info alongside err
+	if err := os.Chmod(locked, 0o400); err != nil {
+		t.Fatalf("failed to chmod: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(locked, 0o755) })
+
+	results, err := newCsearchBackend(t, indexFile).Search("main.go", WithSearchInFilenames(true))
+	if err != nil {
+		t.Fatalf("search failed: %v", err)
+	}
+	// the readable part of the tree is still reported
+	if got, want := resultPaths(results), []string{"cmd/cs/main.go", "main.go"}; !equalLines(got, want) {
+		t.Errorf("got %q, want %q", got, want)
+	}
+}
+
+func TestRemovePathPrefix(t *testing.T) {
+	for _, tt := range []struct {
+		s, prefix, want string
+	}{
+		{"/src/repo/cmd/main.go", "/src/repo", "cmd/main.go"},
+		{"/src/repo/main.go", "/src/repo/", "main.go"},
+		{"/src/repo", "/src/repo", ""},
+		{"/other/main.go", "/src/repo", "/other/main.go"},
+		{"main.go", "", "main.go"},
+	} {
+		if got := removePathPrefix(tt.s, tt.prefix); got != tt.want {
+			t.Errorf("removePathPrefix(%q, %q) = %q, want %q", tt.s, tt.prefix, got, tt.want)
 		}
 	}
 }

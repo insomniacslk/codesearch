@@ -127,8 +127,18 @@ func (g *Csearch) Search(searchString string, opts ...Opt) (Results, error) {
 		for _, indexedPath := range ix.Paths() {
 			files := make(map[string]struct{})
 			err = filepath.Walk(indexedPath, func(path string, info os.FileInfo, err error) error {
-				shortName := removePathPrefix(info.Name(), path)
-				if err == nil && re.MatchString(shortName) {
+				// info is nil whenever err is set, which happens for
+				// directories that cannot be read. Skip them rather than
+				// aborting the whole walk.
+				if err != nil {
+					logrus.Debugf("Skipping %q: %v", path, err)
+					return nil
+				}
+				if info.IsDir() {
+					return nil
+				}
+				shortName := removePathPrefix(path, indexedPath)
+				if re.MatchString(shortName) {
 					logrus.Debugf("Adding file %s", path)
 					files[path] = struct{}{}
 				}
