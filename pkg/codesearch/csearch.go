@@ -138,7 +138,7 @@ func openIndex(path string) (*index.Index, error) {
 		}
 		return nil, fmt.Errorf("cannot read index %q: %w", path, err)
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 
 	header := make([]byte, len(indexMagic))
 	if _, err := io.ReadFull(f, header); err != nil || string(header) != indexMagic {

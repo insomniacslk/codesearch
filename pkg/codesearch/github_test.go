@@ -230,7 +230,7 @@ func searchPage(w http.ResponseWriter, r *http.Request, items string, nextPage i
 		u.RawQuery = q.Encode()
 		w.Header().Set("Link", fmt.Sprintf(`<http://example.com%s>; rel="next"`, u.RequestURI()))
 	}
-	fmt.Fprintf(w, `{"total_count":1,"incomplete_results":false,"items":[%s]}`, items)
+	_, _ = fmt.Fprintf(w, `{"total_count":1,"incomplete_results":false,"items":[%s]}`, items)
 }
 
 // TestGithubSearchPaginates checks that pagination is driven purely by the
@@ -273,7 +273,7 @@ func TestGithubSearchTerminatesWhenRateLimited(t *testing.T) {
 		// already in the past, so the retry must not wait on it
 		w.Header().Set("X-RateLimit-Reset", strconv.FormatInt(time.Now().Add(-time.Hour).Unix(), 10))
 		w.WriteHeader(http.StatusForbidden)
-		fmt.Fprint(w, `{"message":"API rate limit exceeded"}`)
+		_, _ = fmt.Fprint(w, `{"message":"API rate limit exceeded"}`)
 	}))
 	defer srv.Close()
 
@@ -361,7 +361,7 @@ func githubServer(t *testing.T, item string, contents func(w http.ResponseWriter
 }
 
 func fileContents(body string) func(http.ResponseWriter) {
-	return func(w http.ResponseWriter) { fmt.Fprint(w, body) }
+	return func(w http.ResponseWriter) { _, _ = fmt.Fprint(w, body) }
 }
 
 func base64File(content string) string {
@@ -578,7 +578,7 @@ func TestGithubCachesFileContent(t *testing.T) {
 			searchPage(w, r, item, 0)
 		case strings.Contains(r.URL.Path, "/contents/"):
 			atomic.AddInt32(&fetches, 1)
-			fmt.Fprint(w, base64File("needle one\nneedle two\nneedle three\n"))
+			_, _ = fmt.Fprint(w, base64File("needle one\nneedle two\nneedle three\n"))
 		default:
 			t.Errorf("unexpected request to %s", r.URL.Path)
 			http.NotFound(w, r)
@@ -614,7 +614,7 @@ func TestGithubCacheIsPerFile(t *testing.T) {
 			mu.Lock()
 			seen[r.URL.Path] = true
 			mu.Unlock()
-			fmt.Fprint(w, base64File("needle\n"))
+			_, _ = fmt.Fprint(w, base64File("needle\n"))
 		default:
 			http.NotFound(w, r)
 		}
@@ -651,7 +651,7 @@ func pagedGithubServer(t *testing.T, pages, perPage int, searches, contents *int
 			searchPage(w, r, strings.Join(items, ","), next)
 		case strings.Contains(r.URL.Path, "/contents/"):
 			atomic.AddInt32(contents, 1)
-			fmt.Fprint(w, base64File("needle\n"))
+			_, _ = fmt.Fprint(w, base64File("needle\n"))
 		default:
 			t.Errorf("unexpected request to %s", r.URL.Path)
 			http.NotFound(w, r)

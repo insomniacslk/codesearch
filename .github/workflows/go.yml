@@ -47,5 +47,15 @@ jobs:
           exit 1
         fi
 
+    - name: Lint
+      # like gofmt, the findings do not depend on the platform
+      if: matrix.os == 'ubuntu-latest'
+      # golangci-lint v2 needs v7 or later of the action. The linter version
+      # is pinned to the one the code is checked with locally, so a new
+      # release cannot fail CI with findings nobody has seen
+      uses: golangci/golangci-lint-action@v9
+      with:
+        version: v2.15
+
     - name: Test
       run: go test -race -v ./...

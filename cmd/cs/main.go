@@ -275,7 +275,7 @@ var configExampleCmd = &cobra.Command{
 	Run: func(cmd *cobra.Command, args []string) {
 		// explicitly stdout: cobra's own Print helpers target stderr, which
 		// would break "cs config-example > config.yml"
-		fmt.Fprintln(cmd.OutOrStdout(), configFileExample)
+		_, _ = fmt.Fprintln(cmd.OutOrStdout(), configFileExample)
 	},
 }
 
@@ -372,7 +372,7 @@ func printResult(w io.Writer, res *codesearch.Result, filenamesOnly bool) {
 		textBold.Sprint(res.Branch),
 	)
 	if filenamesOnly {
-		fmt.Fprintf(w, "%s\n\n", location)
+		_, _ = fmt.Fprintf(w, "%s\n\n", location)
 		return
 	}
 	before, after := contextBlock(res)
@@ -381,7 +381,7 @@ func printResult(w io.Writer, res *codesearch.Result, filenamesOnly bool) {
 	if res.Lineno != 0 {
 		lineno = textBoldGreen.Sprint(res.Lineno) + ": "
 	}
-	fmt.Fprintf(
+	_, _ = fmt.Fprintf(
 		w,
 		"%s\n\n%s%s%s%s\n\n",
 		location,
