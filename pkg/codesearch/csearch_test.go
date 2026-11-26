@@ -514,3 +514,25 @@ func TestCsearchSkipsStaleFiles(t *testing.T) {
 		}
 	}
 }
+
+// TestCsearchSearchInFilenamesIsOrdered covers -F results coming out of a map
+// in random order, which made --limit pick a different subset on every run.
+func TestCsearchSearchInFilenamesIsOrdered(t *testing.T) {
+	files := make(map[string]string, 50)
+	for i := 0; i < 50; i++ {
+		files[fmt.Sprintf("f%02d.go", i)] = "package main\n"
+	}
+	indexFile, _ := newTestIndex(t, files)
+
+	results, err := newCsearchBackend(t, indexFile).Search(context.Background(), `\.go$`, SearchOptions{SearchInFilenames: true})
+	if err != nil {
+		t.Fatalf("search failed: %v", err)
+	}
+	got := make([]string, 0, len(results))
+	for _, r := range results {
+		got = append(got, r.Path)
+	}
+	if want := resultPaths(results); !equalLines(got, want) {
+		t.Errorf("results are not in lexical order: %q", got)
+	}
+}
