@@ -193,19 +193,7 @@ func (g *Gitlab) toResult(client *gitlab.Client, withCtx gitlab.RequestOptionFun
 			end = start + len(searchString)
 			// TODO fetch entire file content if the requested context is longer
 			// than the available one
-			beforeIdx := linenoInBlob - opts.LinesBefore
-			if beforeIdx < 0 {
-				beforeIdx = 0
-			}
-			afterIdx := linenoInBlob + opts.LinesAfter + 1
-			if afterIdx > len(lines) {
-				afterIdx = len(lines)
-			}
-			result.Lineno = int(blob.Startline)
-			result.Context = ResultContext{
-				Before: lines[beforeIdx:linenoInBlob],
-				After:  lines[linenoInBlob+1 : afterIdx],
-			}
+			result.Context.Before, result.Context.After = contextLines(lines, linenoInBlob+1, opts.LinesBefore, opts.LinesAfter)
 			result.Highlight = [2]int{start, end}
 			result.Line = line
 			result.Lineno = int(blob.Startline) + linenoInBlob
