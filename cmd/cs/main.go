@@ -243,12 +243,12 @@ func getSorter(method string) sorter {
 	switch method {
 	case "a-z":
 		return func(r codesearch.Results) codesearch.Results {
-			sort.Slice(r, func(i, j int) bool { return r[i].Path < r[j].Path })
+			sort.SliceStable(r, func(i, j int) bool { return r[i].Path < r[j].Path })
 			return r
 		}
 	case "z-a":
 		return func(r codesearch.Results) codesearch.Results {
-			sort.Slice(r, func(i, j int) bool { return r[i].Path > r[j].Path })
+			sort.SliceStable(r, func(i, j int) bool { return r[i].Path > r[j].Path })
 			return r
 		}
 	case "":
@@ -540,22 +540,35 @@ func selectResults(results codesearch.Results, limit uint, matchFilename *regexp
 // backend has already matched the pattern against the file names, so nothing
 // is re-tested here: a substring check would throw away every hit from a
 // pattern that is not a literal, which is exactly what csearch searches with.
-// The limit counts distinct file names, since that is what gets printed.
-func selectFilenames(results codesearch.Results, limit uint) []*codesearch.Result {
-	seen := make(map[string]struct{}, len(results))
+// A file is identified by its repository as well as its path, because a
+// csearch index with several roots holds paths that are only relative to
+// their root. sorted says the results are already in the order requested by
+// --sort; otherwise they are put in path order. The limit counts distinct file
+// names in the final order, since that is what gets printed.
+func selectFilenames(results codesearch.Results, limit uint, sorted bool) []*codesearch.Result {
+	type file struct{ repoURL, path string }
+	seen := make(map[file]struct{}, len(results))
 	var out []*codesearch.Result
 	for i := range results {
 		res := &results[i]
-		if _, ok := seen[res.Path]; ok {
+		key := file{res.RepoURL, res.Path}
+		if _, ok := seen[key]; ok {
 			continue
 		}
-		if limit > 0 && uint(len(out)) >= limit {
-			break
-		}
-		seen[res.Path] = struct{}{}
+		seen[key] = struct{}{}
 		out = append(out, res)
 	}
-	sort.Slice(out, func(i, j int) bool { return out[i].Path < out[j].Path })
+	if !sorted {
+		sort.SliceStable(out, func(i, j int) bool {
+			if out[i].Path != out[j].Path {
+				return out[i].Path < out[j].Path
+			}
+			return out[i].RepoURL < out[j].RepoURL
+		})
+	}
+	if limit > 0 && uint(len(out)) > limit {
+		out = out[:limit]
+	}
 	return out
 }
 
@@ -670,7 +683,7 @@ var searchCmd = &cobra.Command{
 			// sort the results, if requested
 			results := sorter(o.results)
 			if flagSearchInFilenames {
-				o.selected = selectFilenames(results, flagLimit)
+				o.selected = selectFilenames(results, flagLimit, flagSort != "")
 			} else {
 				o.selected = selectResults(results, flagLimit, matchFilename)
 			}
