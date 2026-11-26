@@ -22,7 +22,7 @@ type Gitlab struct {
 	project     string
 }
 
-func (g *Gitlab) New(name string, params BackendParams) (Backend, error) {
+func NewGitlab(name string, params BackendParams) (*Gitlab, error) {
 	group, err := gitlabScopeParam(params, "group")
 	if err != nil {
 		return nil, err
@@ -85,7 +85,7 @@ func (g *Gitlab) Project() string {
 	return g.project
 }
 
-func (g *Gitlab) Type() string {
+func (g *Gitlab) Type() BackendType {
 	return BackendTypeGitlab
 }
 

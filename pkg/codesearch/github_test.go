@@ -211,7 +211,7 @@ func TestRetryDelaySecondaryLimit(t *testing.T) {
 // newGithubBackend points a Github backend at a test server.
 func newGithubBackend(t *testing.T, url string) *Github {
 	t.Helper()
-	b, err := (&Github{}).New("test", BackendParams{
+	b, err := NewGithub("test", BackendParams{
 		"org":          "testorg",
 		"token":        "testtoken",
 		"api_endpoint": url,
@@ -219,7 +219,7 @@ func newGithubBackend(t *testing.T, url string) *Github {
 	if err != nil {
 		t.Fatalf("failed to build backend: %v", err)
 	}
-	return b.(*Github)
+	return b
 }
 
 func searchPage(w http.ResponseWriter, r *http.Request, items string, nextPage int) {

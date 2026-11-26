@@ -23,7 +23,7 @@ type Csearch struct {
 	indexFile string
 }
 
-func (g *Csearch) New(name string, params BackendParams) (Backend, error) {
+func NewCsearch(name string, params BackendParams) (*Csearch, error) {
 	indexFile := params.GetString("index_file")
 	if indexFile == nil {
 		return nil, fmt.Errorf("missing 'index_file' parameter")
@@ -60,7 +60,7 @@ func (g *Csearch) Name() string {
 	return g.name
 }
 
-func (g *Csearch) Type() string {
+func (g *Csearch) Type() BackendType {
 	return BackendTypeCsearch
 }
 
