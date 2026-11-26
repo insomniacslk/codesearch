@@ -166,12 +166,18 @@ func (g *Gitlab) toResult(client *gitlab.Client, withCtx gitlab.RequestOptionFun
 		logrus.Debugf("  Project Name: %s", projects[blob.ProjectID].Name)
 
 		project := projects[blob.ProjectID]
+		// a project without a namespace should not happen, but the field is
+		// a pointer and a crash would lose every other result
+		var owner string
+		if project.Namespace != nil {
+			owner = project.Namespace.Path
+		}
 		result := Result{
 			Backend:  g.Name(),
 			Path:     blob.Path,
 			RepoURL:  project.WebURL,
 			FileURL:  fmt.Sprintf("%s/-/blob/%s/%s", project.WebURL, project.DefaultBranch, blob.Path),
-			Owner:    project.Namespace.Path,
+			Owner:    owner,
 			RepoName: project.Path,
 			Branch:   project.DefaultBranch,
 		}

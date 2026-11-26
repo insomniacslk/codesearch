@@ -337,3 +337,29 @@ func TestGitlabHighlightUnicode(t *testing.T) {
 		t.Errorf("highlight %v covers %q, want \"needle\"", res.Highlight, got)
 	}
 }
+
+// TestGitlabNilNamespace checks that a project without a namespace does not
+// crash result conversion.
+func TestGitlabNilNamespace(t *testing.T) {
+	rec := &gitlabRecorder{handler: func(w http.ResponseWriter, r *http.Request) bool {
+		switch {
+		case strings.HasSuffix(r.URL.Path, "/search"):
+			_, _ = fmt.Fprint(w, `[{"basename":"f","data":"needle\n","path":"f.go","ref":"main","startline":1,"project_id":9}]`)
+			return true
+		case r.URL.Path == "/api/v4/projects/9":
+			_, _ = fmt.Fprint(w, `{"id":9,"name":"proj","path":"proj","default_branch":"main","web_url":"https://gitlab.example.com/proj"}`)
+			return true
+		}
+		return false
+	}}
+	srv := httptest.NewServer(rec)
+	defer srv.Close()
+
+	results, err := newGitlabBackend(t, srv.URL, BackendParams{}).Search(context.Background(), "needle", SearchOptions{})
+	if err != nil {
+		t.Fatalf("search failed: %v", err)
+	}
+	if len(results) != 1 || results[0].Owner != "" {
+		t.Errorf("got %+v, want one result with no owner", results)
+	}
+}
