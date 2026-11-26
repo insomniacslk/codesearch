@@ -292,6 +292,8 @@ func TestRemovePathPrefix(t *testing.T) {
 		{"/src/repo", "/src/repo", ""},
 		{"/other/main.go", "/src/repo", "/other/main.go"},
 		{"main.go", "", "main.go"},
+		{"/src/repo/main.go", "/", "src/repo/main.go"},
+		{"/", "/", ""},
 	} {
 		if got := removePathPrefix(tt.s, tt.prefix); got != tt.want {
 			t.Errorf("removePathPrefix(%q, %q) = %q, want %q", tt.s, tt.prefix, got, tt.want)
@@ -313,6 +315,10 @@ func TestHasPathPrefix(t *testing.T) {
 		{"/src/repository/main.go", "/src/repo", false},
 		{"/other/main.go", "/src/repo", false},
 		{"/src/repo/main.go", "", false},
+		// an index rooted at / contains every absolute path
+		{"/src/repo/main.go", "/", true},
+		{"/", "/", true},
+		{"main.go", "/", false},
 	} {
 		if got := hasPathPrefix(tt.s, tt.prefix); got != tt.want {
 			t.Errorf("hasPathPrefix(%q, %q) = %v, want %v", tt.s, tt.prefix, got, tt.want)
@@ -574,5 +580,33 @@ func TestCsearchSearchInFilenamesIsOrdered(t *testing.T) {
 	}
 	if want := resultPaths(results); !equalLines(got, want) {
 		t.Errorf("results are not in lexical order: %q", got)
+	}
+}
+
+// TestCsearchRootIndex covers an index whose root is "/": the root used to
+// match no path at all, so every search failed with "no indexed path found".
+func TestCsearchRootIndex(t *testing.T) {
+	dir := t.TempDir()
+	file := filepath.Join(dir, "a.go")
+	if err := os.WriteFile(file, []byte("needle\n"), 0o644); err != nil {
+		t.Fatalf("failed to write: %v", err)
+	}
+	// index a single file under a root of "/" rather than walk the whole
+	// file system
+	indexFile := filepath.Join(t.TempDir(), "csearchindex")
+	iw := index.Create(indexFile)
+	iw.AddPaths([]string{"/"})
+	iw.AddFile(file)
+	iw.Flush()
+
+	results, err := newCsearchBackend(t, indexFile).Search(context.Background(), "needle", SearchOptions{})
+	if err != nil {
+		t.Fatalf("search failed: %v", err)
+	}
+	if got, want := resultPaths(results), []string{strings.TrimPrefix(file, "/")}; !equalLines(got, want) {
+		t.Errorf("got %q, want %q", got, want)
+	}
+	if len(results) == 1 && results[0].RepoName != "/" {
+		t.Errorf("got repo %q, want \"/\"", results[0].RepoName)
 	}
 }
