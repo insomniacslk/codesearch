@@ -9,6 +9,7 @@ import (
 	"io"
 	"io/fs"
 	"log"
+	"math"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -22,6 +23,7 @@ import (
 	"github.com/insomniacslk/codesearch/pkg/codesearch"
 	"github.com/kirsle/configdir"
 	"github.com/sirupsen/logrus"
+	"github.com/spf13/cast"
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
 )
@@ -69,9 +71,9 @@ func init() {
 	searchCmd.PersistentFlags().StringVarP(&searchBackends, "backends", "b", "", "Comma-separated list of names of the backends to use. The names are defined in your configuration file. If specified, it overrides `default_backends` in the configuration file. \"all\" will use every backend")
 	searchCmd.PersistentFlags().BoolVarP(&flagSearchInFilenames, "search-in-filenames", "F", false, "Search only in file names")
 	searchCmd.PersistentFlags().StringVarP(&flagMatchFilename, "match-filename", "f", "", "Show results only from files whose path matches this regexp. Unanchored and case-insensitive, so \".go\" matches anywhere in the path and \"\\.go$\" only at the end")
-	searchCmd.PersistentFlags().IntVarP(&flagSearchContextBefore, "before", "B", 0, "Number of context lines to show before the result")
-	searchCmd.PersistentFlags().IntVarP(&flagSearchContextAfter, "after", "A", 0, "Number of context lines to show after the result")
-	searchCmd.PersistentFlags().IntVarP(&flagSearchContext, "context", "C", 0, "Number of context lines to show on both sides of the result. A non-zero --before or --after takes precedence over it")
+	searchCmd.PersistentFlags().UintP("before", "B", 0, "Number of context lines to show before the result")
+	searchCmd.PersistentFlags().UintP("after", "A", 0, "Number of context lines to show after the result")
+	searchCmd.PersistentFlags().UintP("context", "C", 0, "Number of context lines to show on both sides of the result. A non-zero --before or --after takes precedence over it")
 	searchCmd.PersistentFlags().BoolVarP(&flagCaseInsensitive, "case-insensitive", "i", false, "Case-insensitive search")
 	searchCmd.PersistentFlags().UintVarP(&flagLimit, "limit", "l", 0, "Limit the amount of results that are printed per backend. 0 means no limit. Unless --sort, --match-filename or -F is in play, backends stop fetching once the limit is met, which matters on rate-limited APIs")
 	searchCmd.PersistentFlags().StringVarP(&flagSort, "sort", "s", "", "Sort the results. Possible values: \"a-z\", \"z-a\"")
@@ -120,18 +122,49 @@ func bindFlags() {
 	}
 }
 
+// unsignedSetting reads a count that cannot be negative. On the command line
+// the flags are unsigned, so pflag refuses a negative value by itself. A value
+// from the config file or the environment gets no such check: viper.GetUint
+// drops the conversion error and returns 0, which would hide the mistake, and
+// GetInt would let a negative context through to the backends and wrap a
+// negative limit round to a huge number. The result stays an int because the
+// backends subtract with it, and unsigned arithmetic would wrap there instead.
+func unsignedSetting(flag string) (int, error) {
+	key := flagToConfigKey[flag]
+	raw := viper.Get(key)
+	n, err := cast.ToUintE(raw)
+	if err != nil {
+		return 0, fmt.Errorf("invalid value %v for --%s (%s): %w", raw, flag, key, err)
+	}
+	if n > math.MaxInt32 {
+		return 0, fmt.Errorf("invalid value %v for --%s (%s): too large", raw, flag, key)
+	}
+	return int(n), nil
+}
+
 // resolveFlags applies the effective value of every bound flag, so that
 // settings coming from the config file are honoured when the flag was not
 // passed on the command line.
-func resolveFlags() {
+func resolveFlags() error {
 	flagDebug = viper.GetBool("debug")
 	flagStats = viper.GetBool("stats")
-	flagLimit = uint(viper.GetInt("defaults.limit"))
+	limit, err := unsignedSetting("limit")
+	if err != nil {
+		return err
+	}
+	flagLimit = uint(limit)
 	flagSort = viper.GetString("defaults.sort")
-	flagSearchContextBefore = viper.GetInt("defaults.before")
-	flagSearchContextAfter = viper.GetInt("defaults.after")
+	if flagSearchContextBefore, err = unsignedSetting("before"); err != nil {
+		return err
+	}
+	if flagSearchContextAfter, err = unsignedSetting("after"); err != nil {
+		return err
+	}
+	if flagSearchContext, err = unsignedSetting("context"); err != nil {
+		return err
+	}
 	// -C supplies both sides; a side that was asked for explicitly wins
-	if flagSearchContext = viper.GetInt("defaults.context"); flagSearchContext > 0 {
+	if flagSearchContext > 0 {
 		if flagSearchContextBefore == 0 {
 			flagSearchContextBefore = flagSearchContext
 		}
@@ -154,6 +187,7 @@ func resolveFlags() {
 	if flagDebug {
 		logrus.SetLevel(logrus.DebugLevel)
 	}
+	return nil
 }
 
 // configPath is where the configuration is expected, for error messages.
@@ -206,8 +240,7 @@ func loadConfig() error {
 		return fmt.Errorf("invalid config file %s: %w", viper.ConfigFileUsed(), err)
 	}
 
-	resolveFlags()
-	return nil
+	return resolveFlags()
 }
 
 var listCmd = &cobra.Command{

@@ -1342,3 +1342,52 @@ func TestSelectFilenamesOrderAndLimit(t *testing.T) {
 		}
 	})
 }
+
+// TestNegativeValuesRejected covers negative context and limit values. The
+// context values reached the backends, and a negative limit wrapped round to a
+// huge unsigned number. A value that is not a number at all used to become 0
+// without a word.
+func TestNegativeValuesRejected(t *testing.T) {
+	for _, tt := range []struct {
+		name   string
+		config string
+		want   string
+	}{
+		{"defaults.before", "defaults:\n  before: -1\n", "defaults.before"},
+		{"defaults.after", "defaults:\n  after: -1\n", "defaults.after"},
+		{"defaults.context", "defaults:\n  context: -1\n", "defaults.context"},
+		{"defaults.limit", "defaults:\n  limit: -1\n", "defaults.limit"},
+		{"not a number", "defaults:\n  before: abc\n", "defaults.before"},
+		{"too large", "defaults:\n  after: 4294967296\n", "defaults.after"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			resetConfigState(t)
+			configFile = writeConfig(t, testConfig+tt.config)
+			err := loadConfig()
+			if err == nil {
+				t.Fatalf("got nil error, want a failure (limit=%d before=%d after=%d)",
+					flagLimit, flagSearchContextBefore, flagSearchContextAfter)
+			}
+			if !strings.Contains(err.Error(), tt.want) {
+				t.Errorf("error %q does not name %s", err, tt.want)
+			}
+		})
+	}
+}
+
+// TestNegativeFlagsRejectedByPflag checks that the command line never gets as
+// far as the config: the flags are unsigned, so parsing refuses the value.
+func TestNegativeFlagsRejectedByPflag(t *testing.T) {
+	for _, name := range []string{"before", "after", "context", "limit"} {
+		t.Run(name, func(t *testing.T) {
+			f := searchCmd.PersistentFlags().Lookup(name)
+			if f == nil {
+				t.Fatalf("no such flag: %q", name)
+			}
+			if err := f.Value.Set("-1"); err == nil {
+				_ = f.Value.Set(f.DefValue)
+				t.Errorf("--%s accepted -1", name)
+			}
+		})
+	}
+}
