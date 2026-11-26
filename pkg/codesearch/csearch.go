@@ -273,6 +273,28 @@ func (g *Csearch) toResult(ctx context.Context, pattern string, ix *index.Index,
 			logrus.Debugf("Skipping empty file results")
 			continue
 		}
+		// find the indexed path this file sits under, preferring the
+		// longest match so nested indexed roots resolve to the deeper one
+		var indexedPath string
+		for _, p := range ix.Paths() {
+			if hasPathPrefix(name, p) && len(p) > len(indexedPath) {
+				indexedPath = p
+			}
+		}
+		if indexedPath == "" {
+			return nil, fmt.Errorf("no indexed path found for %q", name)
+		}
+		shortName := removePathPrefix(name, indexedPath)
+		// read the file once for all of its matches, not once per match
+		var fileLines []string
+		if opts.LinesBefore > 0 || opts.LinesAfter > 0 {
+			fullText, err := os.ReadFile(name)
+			if err != nil {
+				logrus.Warnf("Cannot read %q for context, showing the match alone: %v", name, err)
+			} else {
+				fileLines = strings.Split(string(fullText), "\n")
+			}
+		}
 		olines := strings.Split(o, "\n")
 		for _, oline := range olines {
 			if oline == "" {
@@ -293,25 +315,9 @@ func (g *Csearch) toResult(ctx context.Context, pattern string, ix *index.Index,
 			if newlineIdx != -1 {
 				line = line[:newlineIdx]
 			}
-			// find the indexed path this file sits under, preferring the
-			// longest match so nested indexed roots resolve to the deeper one
-			var indexedPath string
-			for _, p := range ix.Paths() {
-				if hasPathPrefix(name, p) && len(p) > len(indexedPath) {
-					indexedPath = p
-				}
-			}
-			if indexedPath == "" {
-				return nil, fmt.Errorf("no indexed path found for %q", name)
-			}
 			var before, after []string
-			if opts.LinesBefore > 0 || opts.LinesAfter > 0 {
-				fullText, err := os.ReadFile(name)
-				if err != nil {
-					return nil, fmt.Errorf("failed to read file %q: %w", name, err)
-				}
-				lines := strings.Split(string(fullText), "\n")
-				before, after = contextLines(lines, lineno, opts.LinesBefore, opts.LinesAfter)
+			if fileLines != nil {
+				before, after = contextLines(fileLines, lineno, opts.LinesBefore, opts.LinesAfter)
 			}
 			// find start and end offsets for highlight
 			offsets := re.FindAllStringIndex(line, -1)
@@ -321,7 +327,6 @@ func (g *Csearch) toResult(ctx context.Context, pattern string, ix *index.Index,
 			if len(offsets) > 0 {
 				start, end = offsets[0][0], offsets[0][1]
 			}
-			shortName := removePathPrefix(name, indexedPath)
 			result := Result{
 				Backend:   g.Name(),
 				Path:      shortName,
@@ -334,8 +339,6 @@ func (g *Csearch) toResult(ctx context.Context, pattern string, ix *index.Index,
 				Lineno:    lineno,
 				Line:      line,
 				Highlight: [2]int{start, end},
-				// TODO: IsFilename
-				//IsFilename: true/false
 			}
 			results = append(results, result)
 		}
