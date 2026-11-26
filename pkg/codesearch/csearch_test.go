@@ -462,6 +462,23 @@ func TestCsearchMissingIndex(t *testing.T) {
 			setup:   func(t *testing.T) string { return t.TempDir() },
 			wantMsg: "not a codesearch index",
 		},
+		// index.Open checks the size and the trailer and calls log.Fatal
+		// when either is wrong, so these used to exit the test binary
+		{
+			name:    "header only",
+			setup:   csearchWriteIndexFile(indexMagic),
+			wantMsg: "truncated",
+		},
+		{
+			name:    "header and body without trailer",
+			setup:   csearchWriteIndexFile(indexMagic + strings.Repeat("\x00", 64)),
+			wantMsg: "truncated",
+		},
+		{
+			name:    "header and trailer only",
+			setup:   csearchWriteIndexFile(indexMagic + indexTrailer),
+			wantMsg: "truncated",
+		},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			path := tt.setup(t)
@@ -489,6 +506,16 @@ func TestCsearchValidIndexStillOpens(t *testing.T) {
 	}
 	if len(results) != 1 {
 		t.Errorf("got %d results, want 1", len(results))
+	}
+}
+
+func csearchWriteIndexFile(content string) func(t *testing.T) string {
+	return func(t *testing.T) string {
+		p := filepath.Join(t.TempDir(), "csearchindex")
+		if err := os.WriteFile(p, []byte(content), 0o644); err != nil {
+			t.Fatalf("failed to write: %v", err)
+		}
+		return p
 	}
 }
 

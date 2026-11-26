@@ -112,12 +112,22 @@ func removePathPrefix(s, prefix string) string {
 	return strings.TrimPrefix(strings.TrimPrefix(s, strings.TrimRight(prefix, "/")), "/")
 }
 
-// indexMagic is the header cindex writes at the start of an index file.
-const indexMagic = "csearch index 1\n"
+// indexMagic and indexTrailer are the header and trailer cindex writes at the
+// start and end of an index file. Five 4-byte section offsets sit right before
+// the trailer, so no real index is shorter than indexMinSize.
+const (
+	indexMagic   = "csearch index 1\n"
+	indexTrailer = "\ncsearch trailr\n"
+	indexMinSize = len(indexMagic) + 5*4 + len(indexTrailer)
+)
 
 // openIndex validates the index before handing it to index.Open, which calls
 // log.Fatal on anything it does not like and so would take the whole process
-// down with "corrupt index" even when the file is simply not there.
+// down with "corrupt index" even when the file is simply not there. Checking
+// the header, the size and the trailer catches missing, foreign and truncated
+// files. Deeper corruption (bad section offsets) can still reach log.Fatal in
+// the library; there is no way to recover from that short of re-parsing the
+// whole format here.
 func openIndex(path string) (*index.Index, error) {
 	f, err := os.Open(path)
 	if err != nil {
@@ -131,6 +141,17 @@ func openIndex(path string) (*index.Index, error) {
 	header := make([]byte, len(indexMagic))
 	if _, err := io.ReadFull(f, header); err != nil || string(header) != indexMagic {
 		return nil, fmt.Errorf("%q is not a codesearch index, recreate it with cindex", path)
+	}
+	info, err := f.Stat()
+	if err != nil {
+		return nil, fmt.Errorf("cannot stat index %q: %w", path, err)
+	}
+	if info.Size() < int64(indexMinSize) {
+		return nil, fmt.Errorf("index %q is truncated, recreate it with cindex", path)
+	}
+	trailer := make([]byte, len(indexTrailer))
+	if _, err := f.ReadAt(trailer, info.Size()-int64(len(indexTrailer))); err != nil || string(trailer) != indexTrailer {
+		return nil, fmt.Errorf("index %q is truncated, recreate it with cindex", path)
 	}
 	return index.Open(path), nil
 }
