@@ -238,6 +238,19 @@ func (g *Github) toResult(ctx context.Context, client *github.Client, csresults 
 		logrus.Debugf("  Repository: %+v:\n", res.Repository)
 		logrus.Debugf("  TextMatches:\n")
 		for idx, tm := range res.TextMatches {
+			logrus.Debugf("    %d) text match:\n", idx+1)
+			logrus.Debugf("        ObjectURL: %s\n", tm.GetObjectURL())
+			logrus.Debugf("        ObjectType: %s\n", tm.GetObjectType())
+			logrus.Debugf("        Property: %s\n", tm.GetProperty())
+			logrus.Debugf("        Fragment: %s\n", tm.GetFragment())
+			// a query that matches the file path yields a text match whose
+			// fragment is the path, which is not in the file content. A
+			// missing property is taken as content, which is what it is in
+			// practice.
+			if p := tm.GetProperty(); p != "" && p != "content" {
+				logrus.Debugf("Skipping text match on property %q", p)
+				continue
+			}
 			fullText, err := g.fileContent(ctx, client, contents,
 				res.GetRepository().GetOwner().GetLogin(),
 				res.GetRepository().GetName(),
@@ -253,11 +266,6 @@ func (g *Github) toResult(ctx context.Context, client *github.Client, csresults 
 			}
 
 			lines := strings.Split(fullText, "\n")
-			logrus.Debugf("    %d) text match:\n", idx+1)
-			logrus.Debugf("        ObjectURL: %s\n", tm.GetObjectURL())
-			logrus.Debugf("        ObjectType: %s\n", tm.GetObjectType())
-			logrus.Debugf("        Property: %s\n", tm.GetProperty())
-			logrus.Debugf("        Fragment: %s\n", tm.GetFragment())
 			logrus.Debugf("        Matches:\n")
 			for _, match := range tm.Matches {
 				// indices is documented as a start/end pair but is omitted

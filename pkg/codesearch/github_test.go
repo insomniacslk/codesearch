@@ -755,3 +755,53 @@ func TestGithubContextLines(t *testing.T) {
 		t.Errorf("after: got %q, want %q", got, want)
 	}
 }
+
+// githubItem builds one search hit with the given text matches.
+func githubItem(path, textMatches string) string {
+	return fmt.Sprintf(`{
+		"name": "f.go", "path": %q, "sha": "x",
+		"html_url": "https://example.com/testorg/repo/blob/main/%s",
+		"repository": {"name": "repo", "html_url": "https://example.com/testorg/repo", "owner": {"login": "testorg"}},
+		"text_matches": [%s]}`, path, path, textMatches)
+}
+
+// TestGithubPathMatchIsSkipped is the regression test for a query that also
+// matches the file path. GitHub reports that as a text match on the "path"
+// property, whose fragment is not in the file, and that used to fail the whole
+// search.
+func TestGithubPathMatchIsSkipped(t *testing.T) {
+	var fetches int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.Contains(r.URL.Path, "/search/code"):
+			items := githubItem("src/needle.go",
+				`{"property":"path","fragment":"src/needle.go","matches":[{"indices":[4,10]}]},
+				 {"property":"content","fragment":"func needle() {}","matches":[{"indices":[5,11]}]}`) +
+				"," + githubItem("src/needle_only.go",
+				`{"property":"path","fragment":"src/needle_only.go","matches":[{"indices":[4,10]}]}`)
+			searchPage(w, r, items, 0)
+		case strings.Contains(r.URL.Path, "/contents/"):
+			atomic.AddInt32(&fetches, 1)
+			_, _ = fmt.Fprint(w, base64File("package main\n\nfunc needle() {}\n"))
+		default:
+			t.Errorf("unexpected request to %s", r.URL.Path)
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+
+	results, err := newGithubBackend(t, srv.URL).Search(context.Background(), "needle", SearchOptions{})
+	if err != nil {
+		t.Fatalf("search failed: %v", err)
+	}
+	if len(results) != 1 {
+		t.Fatalf("got %d results, want 1", len(results))
+	}
+	if got, want := results[0].Lineno, 3; got != want {
+		t.Errorf("lineno: got %d, want %d", got, want)
+	}
+	// a path-only hit needs no file content
+	if got := atomic.LoadInt32(&fetches); got != 1 {
+		t.Errorf("got %d content fetches, want 1", got)
+	}
+}
