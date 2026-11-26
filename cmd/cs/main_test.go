@@ -1202,3 +1202,54 @@ func TestLimitedSearchStillHonoursThePrintedLimit(t *testing.T) {
 		t.Errorf("got %d results, want 2", len(got))
 	}
 }
+
+func backendsConfig(names ...string) *codesearch.Config {
+	cfg := &codesearch.Config{Backends: map[string]codesearch.BackendConfig{}}
+	for _, n := range names {
+		cfg.Backends[n] = codesearch.BackendConfig{Type: codesearch.BackendTypeCsearch}
+	}
+	return cfg
+}
+
+// TestResolveBackendNames covers "all" expanding in map iteration order, which
+// changed the order of the output from one run to the next, and -b values that
+// carried spaces or repeated a backend.
+func TestResolveBackendNames(t *testing.T) {
+	cfg := backendsConfig("delta", "alpha", "charlie", "bravo", "echo", "foxtrot", "golf", "hotel")
+	all := []string{"alpha", "bravo", "charlie", "delta", "echo", "foxtrot", "golf", "hotel"}
+	for _, tt := range []struct {
+		name      string
+		requested []string
+		want      []string
+	}{
+		{"all is sorted", []string{"all"}, all},
+		{"all wins over other names", []string{"echo", "all"}, all},
+		{"explicit order is kept", []string{"echo", "alpha"}, []string{"echo", "alpha"}},
+		{"whitespace is trimmed", []string{" echo", "alpha "}, []string{"echo", "alpha"}},
+		{"empty entries are dropped", []string{"echo", "", " ", "alpha"}, []string{"echo", "alpha"}},
+		{"duplicates keep the first", []string{"echo", "alpha", "echo"}, []string{"echo", "alpha"}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			// map iteration order varies, so one lucky run proves nothing
+			for i := 0; i < 20; i++ {
+				got, err := resolveBackendNames(cfg, tt.requested)
+				if err != nil {
+					t.Fatalf("got error %v, want nil", err)
+				}
+				if !equalStrings(got, tt.want) {
+					t.Fatalf("got %q, want %q", got, tt.want)
+				}
+			}
+		})
+	}
+}
+
+func TestResolveBackendNamesUnknown(t *testing.T) {
+	_, err := resolveBackendNames(backendsConfig("alpha"), []string{"alpha", "nope"})
+	if err == nil {
+		t.Fatal("got nil error, want a failure for an unknown backend")
+	}
+	if !strings.Contains(err.Error(), `"nope"`) {
+		t.Errorf("error %q does not name the backend", err)
+	}
+}
