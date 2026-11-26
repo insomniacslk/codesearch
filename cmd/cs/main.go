@@ -561,8 +561,9 @@ func selectFilenames(results codesearch.Results, limit uint) []*codesearch.Resul
 
 // resolveBackendNames turns the requested backend names into keys of the
 // config. "all" selects every backend, sorted so that the output order is the
-// same on every run rather than following map iteration. Blanks and repeats
-// are dropped so that -b "a, b" works and -b a,a does not search twice.
+// same on every run rather than following map iteration. Names are matched
+// without regard to case, and blanks and repeats are dropped so that
+// -b "a, b" works and -b a,a does not search twice.
 func resolveBackendNames(config *codesearch.Config, requested []string) ([]string, error) {
 	var names []string
 	seen := make(map[string]struct{}, len(requested))
@@ -571,7 +572,7 @@ func resolveBackendNames(config *codesearch.Config, requested []string) ([]strin
 		if name == "" {
 			continue
 		}
-		if name == "all" {
+		if strings.EqualFold(name, codesearch.AllBackends) {
 			names = make([]string, 0, len(config.Backends))
 			for key := range config.Backends {
 				names = append(names, key)
@@ -579,8 +580,8 @@ func resolveBackendNames(config *codesearch.Config, requested []string) ([]strin
 			sort.Strings(names)
 			return names, nil
 		}
-		key := name
-		if _, ok := config.Backends[key]; !ok {
+		key, ok := config.LookupBackend(name)
+		if !ok {
 			return nil, fmt.Errorf("backend %q not found", name)
 		}
 		if _, ok := seen[key]; ok {

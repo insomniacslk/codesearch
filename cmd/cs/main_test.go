@@ -1203,6 +1203,38 @@ func TestLimitedSearchStillHonoursThePrintedLimit(t *testing.T) {
 	}
 }
 
+// TestMixedCaseBackendNames covers backend names with upper case letters.
+// Viper lowercases every map key, so the name under `backends` no longer
+// matched the same name written in default_backends or passed to -b.
+func TestMixedCaseBackendNames(t *testing.T) {
+	resetConfigState(t)
+	configFile = writeConfig(t, `
+default_backends: [GitHub_Me]
+backends:
+  GitHub_Me:
+    type: csearch
+    params:
+      index_file: /tmp/index
+`)
+	if err := loadConfig(); err != nil {
+		t.Fatalf("failed to load config: %v", err)
+	}
+	for _, requested := range []string{"GitHub_Me", "github_me", "GITHUB_ME"} {
+		names, err := resolveBackendNames(getConfig(), []string{requested})
+		if err != nil {
+			t.Errorf("%q: got error %v, want nil", requested, err)
+			continue
+		}
+		if len(names) != 1 {
+			t.Errorf("%q: got %q, want one backend", requested, names)
+			continue
+		}
+		if _, ok := getConfig().Backends[names[0]]; !ok {
+			t.Errorf("%q: resolved to %q, which is not a key of the config", requested, names[0])
+		}
+	}
+}
+
 func backendsConfig(names ...string) *codesearch.Config {
 	cfg := &codesearch.Config{Backends: map[string]codesearch.BackendConfig{}}
 	for _, n := range names {
@@ -1224,10 +1256,12 @@ func TestResolveBackendNames(t *testing.T) {
 	}{
 		{"all is sorted", []string{"all"}, all},
 		{"all wins over other names", []string{"echo", "all"}, all},
+		{"all is case-insensitive", []string{"ALL"}, all},
 		{"explicit order is kept", []string{"echo", "alpha"}, []string{"echo", "alpha"}},
 		{"whitespace is trimmed", []string{" echo", "alpha "}, []string{"echo", "alpha"}},
 		{"empty entries are dropped", []string{"echo", "", " ", "alpha"}, []string{"echo", "alpha"}},
 		{"duplicates keep the first", []string{"echo", "alpha", "echo"}, []string{"echo", "alpha"}},
+		{"duplicates differing in case", []string{"echo", "ECHO"}, []string{"echo"}},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			// map iteration order varies, so one lucky run proves nothing

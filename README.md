@@ -15,6 +15,9 @@ Create a file called `config.yml` in your configdir:
 Use the output of `cs config-example` to populate a sample config. Alternatively
 see the file[`config.yml.example`](/cmd/cs/config.yml.example).
 
+Backend names are matched without regard to case, because the config loader
+lowercases them: `-b GitHub_Me` and `-b github_me` select the same backend.
+
 ## Features
 
 Feature matrix:
