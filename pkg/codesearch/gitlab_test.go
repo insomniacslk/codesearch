@@ -2,6 +2,7 @@ package codesearch
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -222,5 +223,55 @@ func TestGitlabRejectsGroupAndProjectTogether(t *testing.T) {
 	})
 	if err == nil {
 		t.Fatal("got nil error, want a failure for group and project together")
+	}
+}
+
+// gitlabBlobSearch serves a single blob with the given data and path from
+// project 9 and runs a search against it.
+func gitlabBlobSearch(t *testing.T, query, data, path string, startline int, opts SearchOptions) Results {
+	t.Helper()
+	blob, err := json.Marshal(map[string]interface{}{
+		"basename": path, "data": data, "path": path, "filename": path,
+		"ref": "main", "startline": startline, "project_id": 9,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	rec := &gitlabRecorder{handler: func(w http.ResponseWriter, r *http.Request) bool {
+		switch {
+		case strings.HasSuffix(r.URL.Path, "/search"):
+			_, _ = fmt.Fprintf(w, `[%s]`, blob)
+			return true
+		case r.URL.Path == "/api/v4/projects/9":
+			_, _ = fmt.Fprint(w, `{"id":9,"name":"proj","path":"proj","default_branch":"main",
+				"web_url":"https://gitlab.example.com/ns/proj","namespace":{"path":"ns"}}`)
+			return true
+		}
+		return false
+	}}
+	srv := httptest.NewServer(rec)
+	defer srv.Close()
+
+	results, err := newGitlabBackend(t, srv.URL, BackendParams{}).Search(context.Background(), query, opts)
+	if err != nil {
+		t.Fatalf("search failed: %v", err)
+	}
+	if len(results) != 1 {
+		t.Fatalf("got %d results, want 1", len(results))
+	}
+	return results
+}
+
+// TestGitlabNegativeContext is the regression test for a panic: a negative
+// LinesBefore or LinesAfter produced inverted slice bounds.
+func TestGitlabNegativeContext(t *testing.T) {
+	for _, opts := range []SearchOptions{{LinesBefore: -1}, {LinesAfter: -2}, {LinesBefore: -5, LinesAfter: -5}} {
+		res := gitlabBlobSearch(t, "needle", "a\nneedle\nb\n", "f.go", 1, opts)[0]
+		if res.Line != "needle" || res.Lineno != 2 {
+			t.Errorf("%+v: got line %q at %d, want \"needle\" at 2", opts, res.Line, res.Lineno)
+		}
+		if len(res.Context.Before) != 0 || len(res.Context.After) != 0 {
+			t.Errorf("%+v: got context %+v, want none", opts, res.Context)
+		}
 	}
 }
