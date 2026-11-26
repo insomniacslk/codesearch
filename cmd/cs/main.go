@@ -559,6 +559,39 @@ func selectFilenames(results codesearch.Results, limit uint) []*codesearch.Resul
 	return out
 }
 
+// resolveBackendNames turns the requested backend names into keys of the
+// config. "all" selects every backend, sorted so that the output order is the
+// same on every run rather than following map iteration. Blanks and repeats
+// are dropped so that -b "a, b" works and -b a,a does not search twice.
+func resolveBackendNames(config *codesearch.Config, requested []string) ([]string, error) {
+	var names []string
+	seen := make(map[string]struct{}, len(requested))
+	for _, name := range requested {
+		name = strings.TrimSpace(name)
+		if name == "" {
+			continue
+		}
+		if name == "all" {
+			names = make([]string, 0, len(config.Backends))
+			for key := range config.Backends {
+				names = append(names, key)
+			}
+			sort.Strings(names)
+			return names, nil
+		}
+		key := name
+		if _, ok := config.Backends[key]; !ok {
+			return nil, fmt.Errorf("backend %q not found", name)
+		}
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		names = append(names, key)
+	}
+	return names, nil
+}
+
 var searchCmd = &cobra.Command{
 	Use:               "search",
 	Short:             "Search code in the specified backends",
@@ -573,21 +606,9 @@ var searchCmd = &cobra.Command{
 		if searchBackends != "" {
 			backendsToValidate = strings.Split(searchBackends, ",")
 		}
-		var backendNames []string
-		for _, b := range backendsToValidate {
-			// Config.Validate has already ensured that there is either "all" or
-			// individual backend names.
-			if b == "all" {
-				// clear out backendNames in case other backends were
-				// appended
-				backendNames = make([]string, 0, len(config.Backends))
-				for name := range config.Backends {
-					backendNames = append(backendNames, name)
-				}
-				break
-			} else {
-				backendNames = append(backendNames, b)
-			}
+		backendNames, err := resolveBackendNames(config, backendsToValidate)
+		if err != nil {
+			logrus.Fatal(err)
 		}
 		// get sorter to sort results later
 		sorter := getSorter(flagSort)
@@ -603,10 +624,7 @@ var searchCmd = &cobra.Command{
 		fmt.Fprintf(os.Stderr, "Searching %q on %q\n", searchString, backendNames)
 		backends := make([]codesearch.Backend, 0, len(backendNames))
 		for _, name := range backendNames {
-			backendConfig, ok := config.Backends[name]
-			if !ok {
-				logrus.Fatalf("Backend %q not found", name)
-			}
+			backendConfig := config.Backends[name]
 			backend := codesearch.BackendByType(backendConfig.Type)
 			if backend == nil {
 				logrus.Fatalf("Failed to get backend for type %q", backendConfig.Type)
