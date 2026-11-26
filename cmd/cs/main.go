@@ -296,15 +296,27 @@ func splitHighlight(line string, h [2]int) (head, match, tail string) {
 // contextBlock renders the lines around a match, numbered relative to it.
 func contextBlock(res *codesearch.Result) (before, after string) {
 	for i, line := range res.Context.Before {
-		before += fmt.Sprintf("%d: %s\n", res.Lineno-(len(res.Context.Before)-i), line)
+		before += linePrefix(res, res.Lineno-(len(res.Context.Before)-i)) + line + "\n"
 	}
 	for i, line := range res.Context.After {
-		after += fmt.Sprintf("%d: %s\n", res.Lineno+i+1, line)
+		after += linePrefix(res, res.Lineno+i+1) + line + "\n"
 	}
 	if after != "" {
 		after = "\n" + after
 	}
 	return before, after
+}
+
+// linePrefix is the "N: " printed before line n of a result. A Lineno of 0
+// means the backend could not place the match in the file (GitHub falls back
+// to the search fragment when the file changed or is too large), so the lines
+// are printed bare: numbering them from 0 would show a 0 for the match and
+// negative numbers above it.
+func linePrefix(res *codesearch.Result, n int) string {
+	if res.Lineno == 0 {
+		return ""
+	}
+	return fmt.Sprintf("%d: ", n)
 }
 
 // printResult renders one result as formatted text. A file name search has no
@@ -323,12 +335,16 @@ func printResult(w io.Writer, res *codesearch.Result, filenamesOnly bool) {
 	}
 	before, after := contextBlock(res)
 	head, match, tail := splitHighlight(res.Line, res.Highlight)
+	var lineno string
+	if res.Lineno != 0 {
+		lineno = textBoldGreen.Sprint(res.Lineno) + ": "
+	}
 	fmt.Fprintf(
 		w,
-		"%s\n\n%s%s: %s%s\n\n",
+		"%s\n\n%s%s%s%s\n\n",
 		location,
 		before,
-		textBoldGreen.Sprint(res.Lineno),
+		lineno,
 		head+textBoldRed.Sprint(match)+tail,
 		after,
 	)

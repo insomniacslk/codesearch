@@ -850,6 +850,48 @@ func TestContextBlockNumbering(t *testing.T) {
 	}
 }
 
+// TestContextBlockUnknownLineno covers a result whose line in the file is not
+// known: numbering from 0 would show the lines above the match as negative.
+func TestContextBlockUnknownLineno(t *testing.T) {
+	res := &codesearch.Result{
+		Context: codesearch.ResultContext{
+			Before: []string{"one", "two"},
+			After:  []string{"four"},
+		},
+	}
+	before, after := contextBlock(res)
+	if want := "one\ntwo\n"; before != want {
+		t.Errorf("before:\ngot  %q\nwant %q", before, want)
+	}
+	if want := "\nfour\n"; after != want {
+		t.Errorf("after:\ngot  %q\nwant %q", after, want)
+	}
+}
+
+func TestPrintResultUnknownLineno(t *testing.T) {
+	old := color.NoColor
+	color.NoColor = true
+	defer func() { color.NoColor = old }()
+
+	for _, tt := range []struct {
+		lineno int
+		want   string
+	}{
+		{0, "gh:o/r:f.go (main)\n\nabove\nthe needle\nbelow\n\n\n"},
+		{5, "gh:o/r:f.go (main)\n\n4: above\n5: the needle\n6: below\n\n\n"},
+	} {
+		var buf bytes.Buffer
+		printResult(&buf, &codesearch.Result{
+			Backend: "gh", Owner: "o", RepoName: "r", Path: "f.go", Branch: "main",
+			Line: "the needle", Lineno: tt.lineno, Highlight: [2]int{4, 10},
+			Context: codesearch.ResultContext{Before: []string{"above"}, After: []string{"below"}},
+		}, false)
+		if got := buf.String(); got != tt.want {
+			t.Errorf("lineno %d:\ngot  %q\nwant %q", tt.lineno, got, tt.want)
+		}
+	}
+}
+
 func TestContextBlockEmpty(t *testing.T) {
 	before, after := contextBlock(&codesearch.Result{Lineno: 3})
 	if before != "" || after != "" {
