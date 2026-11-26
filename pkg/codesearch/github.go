@@ -178,17 +178,38 @@ func sleep(ctx context.Context, d time.Duration) error {
 	}
 }
 
+// githubFile is a downloaded file, or the reason it could not be downloaded.
+// The failure is kept so that a file with several matches is not requested
+// again for each of them.
+type githubFile struct {
+	text  string
+	lines []string
+	err   error
+}
+
 // fileContent fetches a file, remembering what it downloaded in cache. Code
 // search reports every match in a file as a separate text match, and the
 // search API is rate limited hard enough that re-downloading the same file
 // once per match is the difference between a search completing and hitting the
 // limit.
-func (g *Github) fileContent(ctx context.Context, client *github.Client, cache map[string]string, owner, repo, path string) (string, error) {
+func (g *Github) fileContent(ctx context.Context, client *github.Client, cache map[string]*githubFile, owner, repo, path string) *githubFile {
 	fullPath := fmt.Sprintf("%s/%s/%s", owner, repo, path)
-	if text, ok := cache[fullPath]; ok {
+	if f, ok := cache[fullPath]; ok {
 		logrus.Debugf("Using cached content for %q", fullPath)
-		return text, nil
+		return f
 	}
+	text, err := g.fetchFile(ctx, client, owner, repo, path)
+	f := &githubFile{text: text, err: err}
+	if err == nil {
+		// split once per file rather than once per match
+		f.lines = strings.Split(text, "\n")
+	}
+	cache[fullPath] = f
+	return f
+}
+
+func (g *Github) fetchFile(ctx context.Context, client *github.Client, owner, repo, path string) (string, error) {
+	fullPath := fmt.Sprintf("%s/%s/%s", owner, repo, path)
 	var rc *github.RepositoryContent
 	err := retry(ctx, func() error {
 		logrus.Debugf("Fetching file content, owner=%q repo=%q path=%q", owner, repo, path)
@@ -218,8 +239,20 @@ func (g *Github) fileContent(ctx context.Context, client *github.Client, cache m
 	if err != nil {
 		return "", fmt.Errorf("failed to read content of file %q: %w", fullPath, err)
 	}
-	cache[fullPath] = text
 	return text, nil
+}
+
+// githubAbortsSearch reports whether a failure to fetch one file must end the
+// whole search. Cancellation and rate limits apply to every later request as
+// well, so carrying on would only fail the same way for each remaining file.
+// Anything else is specific to that file.
+func githubAbortsSearch(ctx context.Context, err error) bool {
+	if ctx.Err() != nil {
+		return true
+	}
+	var rlErr *github.RateLimitError
+	var abuseErr *github.AbuseRateLimitError
+	return errors.As(err, &rlErr) || errors.As(err, &abuseErr)
 }
 
 // githubMatchIndices returns the highlight of match relative to fragment, or
@@ -241,7 +274,7 @@ func githubMatchIndices(match *github.Match, fragment string) (int, int, bool) {
 
 func (g *Github) toResult(ctx context.Context, client *github.Client, csresults []*github.CodeResult, opts SearchOptions) (Results, error) {
 	var results Results
-	contents := make(map[string]string)
+	contents := make(map[string]*githubFile)
 	for _, res := range csresults {
 		// each hit costs a file download, so stop as soon as there are enough
 		if opts.Limit > 0 && uint(len(results)) >= opts.Limit {
@@ -254,6 +287,16 @@ func (g *Github) toResult(ctx context.Context, client *github.Client, csresults 
 		logrus.Debugf("  HTMLURL: %s:\n", res.GetHTMLURL())
 		logrus.Debugf("  Repository: %+v:\n", res.Repository)
 		logrus.Debugf("  TextMatches:\n")
+		base := Result{
+			Backend:  g.Name(),
+			Path:     res.GetPath(),
+			RepoURL:  res.GetRepository().GetHTMLURL(),
+			FileURL:  res.GetHTMLURL(),
+			Owner:    res.GetRepository().GetOwner().GetLogin(),
+			RepoName: res.GetRepository().GetName(),
+			Branch:   res.GetRepository().GetDefaultBranch(),
+		}
+		warned := false
 		for idx, tm := range res.TextMatches {
 			logrus.Debugf("    %d) text match:\n", idx+1)
 			logrus.Debugf("        ObjectURL: %s\n", tm.GetObjectURL())
@@ -268,65 +311,85 @@ func (g *Github) toResult(ctx context.Context, client *github.Client, csresults 
 				logrus.Debugf("Skipping text match on property %q", p)
 				continue
 			}
-			fullText, err := g.fileContent(ctx, client, contents,
-				res.GetRepository().GetOwner().GetLogin(),
-				res.GetRepository().GetName(),
-				res.GetPath(),
+			fragment := tm.GetFragment()
+			f := g.fileContent(ctx, client, contents,
+				base.Owner, base.RepoName, base.Path,
 			)
-			if err != nil {
-				return nil, err
+			fragmentStart := -1
+			if f.err != nil {
+				if githubAbortsSearch(ctx, f.err) {
+					return nil, f.err
+				}
+				if !warned {
+					logrus.Warnf("Showing only the search fragment for %q: %v", base.Path, f.err)
+					warned = true
+				}
+			} else if fragmentStart = strings.Index(f.text, fragment); fragmentStart == -1 {
+				// the search index is behind the file, e.g. it changed after
+				// GitHub indexed it
+				if !warned {
+					logrus.Warnf("Showing only the search fragment for %q: fragment not found in the current file content", base.Path)
+					warned = true
+				}
 			}
-			// find fragment in full text
-			fragmentStart := strings.Index(fullText, tm.GetFragment())
-			if fragmentStart == -1 {
-				return nil, fmt.Errorf("code fragment not found in full file content")
-			}
-
-			lines := strings.Split(fullText, "\n")
 			logrus.Debugf("        Matches:\n")
 			for _, match := range tm.Matches {
-				i0, i1, ok := githubMatchIndices(match, tm.GetFragment())
+				i0, i1, ok := githubMatchIndices(match, fragment)
 				if !ok {
 					logrus.Debugf("Skipping match with missing or invalid indices")
 					continue
 				}
-				// start of the highlight, relative to the full file content
-				start := fragmentStart + i0
-				length := i1 - i0
-				lineno := strings.Count((fullText)[:start], "\n") + 1
-				// start of the highlight, relative to the line rather than to
-				// the full text
-				startInLine := start
-				for idx, line := range lines {
-					if idx+1 == lineno {
-						break
+				var result Result
+				if fragmentStart == -1 {
+					result = fragmentResult(base, fragment, i0, i1, opts)
+				} else {
+					result, ok = fileResult(base, f, fragmentStart+i0, i1-i0, opts)
+					if !ok {
+						continue
 					}
-					startInLine -= len(line) + 1
-				}
-				line := lines[lineno-1]
-				// try adding line number
-				fileURLwithLineno, err := url.Parse(res.GetHTMLURL())
-				if err != nil {
-					return nil, fmt.Errorf("invalid file URL %q: %q", res.GetHTMLURL(), err)
-				}
-				fileURLwithLineno.Fragment = fmt.Sprintf("L%d", lineno)
-				before, after := contextLines(lines, lineno, opts.LinesBefore, opts.LinesAfter)
-				result := Result{
-					Backend:   g.Name(),
-					Line:      line,
-					Lineno:    lineno,
-					Context:   ResultContext{Before: before, After: after},
-					Highlight: [2]int{startInLine, startInLine + length},
-					Path:      res.GetPath(),
-					RepoURL:   res.GetRepository().GetHTMLURL(),
-					FileURL:   fileURLwithLineno.String(),
-					Owner:     res.GetRepository().GetOwner().GetLogin(),
-					RepoName:  res.GetRepository().GetName(),
-					Branch:    res.GetRepository().GetDefaultBranch(),
 				}
 				results = append(results, result)
 			}
 		}
 	}
 	return results, nil
+}
+
+// fileResult builds a result for a match that starts at byte start of the
+// full file content.
+func fileResult(base Result, f *githubFile, start, length int, opts SearchOptions) (Result, bool) {
+	lineno := strings.Count(f.text[:start], "\n") + 1
+	// start of the highlight, relative to the line rather than to the full
+	// text
+	startInLine := start - (strings.LastIndex(f.text[:start], "\n") + 1)
+	fileURL, err := url.Parse(base.FileURL)
+	if err != nil {
+		logrus.Warnf("Skipping match in %q: invalid file URL %q: %v", base.Path, base.FileURL, err)
+		return Result{}, false
+	}
+	fileURL.Fragment = fmt.Sprintf("L%d", lineno)
+	before, after := contextLines(f.lines, lineno, opts.LinesBefore, opts.LinesAfter)
+	r := base
+	r.Line = f.lines[lineno-1]
+	r.Lineno = lineno
+	r.Context = ResultContext{Before: before, After: after}
+	r.Highlight = [2]int{startInLine, startInLine + length}
+	r.FileURL = fileURL.String()
+	return r, true
+}
+
+// fragmentResult builds a result from the search fragment alone, for when the
+// file content is not available or no longer holds the fragment. The line
+// number within the file is unknown, so Lineno is 0 and the URL has no line
+// anchor.
+func fragmentResult(base Result, fragment string, i0, i1 int, opts SearchOptions) Result {
+	lines := strings.Split(fragment, "\n")
+	lineno := strings.Count(fragment[:i0], "\n") + 1
+	lineStart := strings.LastIndex(fragment[:i0], "\n") + 1
+	before, after := contextLines(lines, lineno, opts.LinesBefore, opts.LinesAfter)
+	r := base
+	r.Line = lines[lineno-1]
+	r.Context = ResultContext{Before: before, After: after}
+	r.Highlight = [2]int{i0 - lineStart, i1 - lineStart}
+	return r
 }
