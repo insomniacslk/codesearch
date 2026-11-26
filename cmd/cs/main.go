@@ -400,11 +400,11 @@ type jsonOutput struct {
 }
 
 type jsonBackend struct {
-	Name       string `json:"name"`
-	Type       string `json:"type"`
-	Results    int    `json:"results"`
-	DurationMS int64  `json:"duration_ms"`
-	Error      string `json:"error,omitempty"`
+	Name       string                 `json:"name"`
+	Type       codesearch.BackendType `json:"type"`
+	Results    int                    `json:"results"`
+	DurationMS int64                  `json:"duration_ms"`
+	Error      string                 `json:"error,omitempty"`
 }
 
 func writeJSON(w io.Writer, outcomes []searchOutcome, totalResults int, total time.Duration) error {
@@ -677,17 +677,9 @@ var searchCmd = &cobra.Command{
 		fmt.Fprintf(os.Stderr, "Searching %q on %q\n", searchString, backendNames)
 		backends := make([]codesearch.Backend, 0, len(backendNames))
 		for _, name := range backendNames {
-			backendConfig := config.Backends[name]
-			backend := codesearch.BackendByType(backendConfig.Type)
-			if backend == nil {
-				logrus.Fatalf("Failed to get backend for type %q", backendConfig.Type)
-			}
-			var err error
-			backend, err = backend.New(
-				name, backendConfig.Params,
-			)
+			backend, err := codesearch.NewBackend(name, config.Backends[name])
 			if err != nil {
-				logrus.Fatalf("Failed to instantiate backend %q: %v", name, err)
+				logrus.Fatal(err)
 			}
 			backends = append(backends, backend)
 		}

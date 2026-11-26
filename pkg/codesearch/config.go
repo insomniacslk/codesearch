@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"regexp"
+	"slices"
 	"strings"
 	"time"
 )
@@ -100,29 +101,24 @@ func runTokenCommand(cmdline string) (string, error) {
 	return token, nil
 }
 
+// BackendType names a kind of backend, as written under "type" in the config.
 type BackendType string
 
 const (
-	BackendTypeGithub    = "github"
-	BackendTypeGitlab    = "gitlab"
-	BackendTypeBitbucket = "bitbucket"
-	BackendTypeCsearch   = "csearch"
-	BackendTypeUnknown   = "unknown"
+	BackendTypeGithub    BackendType = "github"
+	BackendTypeGitlab    BackendType = "gitlab"
+	BackendTypeBitbucket BackendType = "bitbucket"
+	BackendTypeCsearch   BackendType = "csearch"
 )
 
-func BackendTypeByName(name string) BackendType {
-	switch name {
-	case string(BackendTypeGithub):
-		return BackendTypeGithub
-	case string(BackendTypeGitlab):
-		return BackendTypeGitlab
-	case string(BackendTypeBitbucket):
-		return BackendTypeBitbucket
-	case string(BackendTypeCsearch):
-		return BackendTypeCsearch
-	default:
-		return BackendTypeUnknown
-	}
+// knownBackendTypes are the types the config format recognises. Which of them
+// are implemented is up to backendConstructors; keeping the two apart is what
+// lets a recognised but unimplemented type get a clearer error than a typo.
+var knownBackendTypes = []BackendType{
+	BackendTypeGithub,
+	BackendTypeGitlab,
+	BackendTypeBitbucket,
+	BackendTypeCsearch,
 }
 
 // AllBackends is the reserved name that selects every configured backend.
@@ -159,14 +155,15 @@ func (c *Config) Validate() error {
 		if strings.EqualFold(name, AllBackends) {
 			return fmt.Errorf("backend name 'all' is reserved")
 		}
-		if BackendTypeByName(string(backend.Type)) == BackendTypeUnknown {
+		if _, ok := backendConstructors[backend.Type]; ok {
+			continue
+		}
+		if !slices.Contains(knownBackendTypes, backend.Type) {
 			return fmt.Errorf("unknown backend type %q", backend.Type)
 		}
 		// known to the config but with no implementation behind it, so fail
 		// here rather than at search time
-		if BackendByType(backend.Type) == nil {
-			return fmt.Errorf("backend %q: type %q is not implemented", name, backend.Type)
-		}
+		return fmt.Errorf("backend %q: type %q is not implemented", name, backend.Type)
 	}
 	return nil
 }

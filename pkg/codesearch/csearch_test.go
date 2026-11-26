@@ -193,11 +193,11 @@ func newTestIndex(t *testing.T, files map[string]string) (indexFile, root string
 
 func newCsearchBackend(t *testing.T, indexFile string) *Csearch {
 	t.Helper()
-	b, err := (&Csearch{}).New("test", BackendParams{"index_file": indexFile})
+	b, err := NewCsearch("test", BackendParams{"index_file": indexFile})
 	if err != nil {
 		t.Fatalf("failed to build backend: %v", err)
 	}
-	return b.(*Csearch)
+	return b
 }
 
 func resultPaths(results Results) []string {
@@ -416,11 +416,11 @@ func TestCsearchExpandsIndexPath(t *testing.T) {
 	if err != nil {
 		t.Skipf("no home directory: %v", err)
 	}
-	b, err := (&Csearch{}).New("test", BackendParams{"index_file": "~/.csearchindex"})
+	b, err := NewCsearch("test", BackendParams{"index_file": "~/.csearchindex"})
 	if err != nil {
 		t.Fatalf("failed to build backend: %v", err)
 	}
-	if got, want := b.(*Csearch).indexFile, filepath.Join(home, ".csearchindex"); got != want {
+	if got, want := b.indexFile, filepath.Join(home, ".csearchindex"); got != want {
 		t.Errorf("got %q, want %q", got, want)
 	}
 }

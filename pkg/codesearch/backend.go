@@ -2,6 +2,7 @@ package codesearch
 
 import (
 	"context"
+	"fmt"
 	"time"
 )
 
@@ -37,9 +38,8 @@ type SearchOptions struct {
 }
 
 type Backend interface {
-	New(name string, params BackendParams) (Backend, error)
 	Name() string
-	Type() string
+	Type() BackendType
 	Supports(c Capability) bool
 	Search(ctx context.Context, terms string, opts SearchOptions) (Results, error)
 }
@@ -54,19 +54,38 @@ func searchContext(parent context.Context, timeout time.Duration) (context.Conte
 	return context.WithTimeout(parent, timeout)
 }
 
-func BackendByType(t BackendType) Backend {
-	switch t {
-	case BackendTypeGithub:
-		return &Github{}
-	case BackendTypeGitlab:
-		return &Gitlab{}
-		/*
-			case BackendTypeBitbucket:
-				return &Bitbucket{}
-		*/
-	case BackendTypeCsearch:
-		return &Csearch{}
-	default:
-		return nil
+// backendConstructors is the single list of backend types that have an
+// implementation. Config.Validate consults it too, so a type that is known to
+// the config format but missing here is rejected when the config is loaded
+// rather than when a search first tries to use it.
+var backendConstructors = map[BackendType]func(name string, params BackendParams) (Backend, error){
+	BackendTypeGithub:  asBackend(NewGithub),
+	BackendTypeGitlab:  asBackend(NewGitlab),
+	BackendTypeCsearch: asBackend(NewCsearch),
+}
+
+// asBackend adapts a concrete constructor to the table. On failure it returns
+// an untyped nil: passing the constructor's nil *T through as a Backend would
+// give an interface that is not == nil.
+func asBackend[T Backend](newFn func(string, BackendParams) (T, error)) func(string, BackendParams) (Backend, error) {
+	return func(name string, params BackendParams) (Backend, error) {
+		b, err := newFn(name, params)
+		if err != nil {
+			return nil, err
+		}
+		return b, nil
 	}
+}
+
+// NewBackend builds the backend called name from its configuration.
+func NewBackend(name string, cfg BackendConfig) (Backend, error) {
+	newFn, ok := backendConstructors[cfg.Type]
+	if !ok {
+		return nil, fmt.Errorf("backend %q: type %q is not implemented", name, cfg.Type)
+	}
+	b, err := newFn(name, cfg.Params)
+	if err != nil {
+		return nil, fmt.Errorf("failed to instantiate backend %q: %w", name, err)
+	}
+	return b, nil
 }

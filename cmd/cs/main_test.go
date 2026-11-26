@@ -391,11 +391,8 @@ type fakeBackend struct {
 	calls   int32
 }
 
-func (f *fakeBackend) New(string, codesearch.BackendParams) (codesearch.Backend, error) {
-	return f, nil
-}
 func (f *fakeBackend) Name() string                          { return f.name }
-func (f *fakeBackend) Type() string                          { return "fake" }
+func (f *fakeBackend) Type() codesearch.BackendType          { return "fake" }
 func (f *fakeBackend) Supports(c codesearch.Capability) bool { return f.caps[c] }
 func (f *fakeBackend) Search(ctx context.Context, _ string, _ codesearch.SearchOptions) (codesearch.Results, error) {
 	atomic.AddInt32(&f.calls, 1)

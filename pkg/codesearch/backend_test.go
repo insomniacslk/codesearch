@@ -2,6 +2,9 @@ package codesearch
 
 import (
 	"context"
+	"fmt"
+	"slices"
+	"strings"
 	"testing"
 )
 
@@ -11,17 +14,21 @@ import (
 func TestBackendCapabilities(t *testing.T) {
 	for _, tt := range []struct {
 		backendType       BackendType
+		params            BackendParams
 		caseInsensitive   bool
 		searchInFilenames bool
 	}{
-		{BackendTypeGithub, false, false},
-		{BackendTypeGitlab, false, false},
-		{BackendTypeCsearch, true, true},
+		{BackendTypeGithub, BackendParams{"org": "o", "token": "t", "api_endpoint": "https://api.github.com"}, false, false},
+		{BackendTypeGitlab, BackendParams{"token": "t", "api_endpoint": "https://gitlab.com/api/v4"}, false, false},
+		{BackendTypeCsearch, BackendParams{"index_file": "/nonexistent"}, true, true},
 	} {
 		t.Run(string(tt.backendType), func(t *testing.T) {
-			b := BackendByType(tt.backendType)
-			if b == nil {
-				t.Fatalf("no backend for type %q", tt.backendType)
+			b, err := NewBackend("test", BackendConfig{Type: tt.backendType, Params: tt.params})
+			if err != nil {
+				t.Fatalf("failed to build backend: %v", err)
+			}
+			if got := b.Type(); got != tt.backendType {
+				t.Errorf("Type: got %q, want %q", got, tt.backendType)
 			}
 			if got := b.Supports(CapCaseInsensitive); got != tt.caseInsensitive {
 				t.Errorf("CapCaseInsensitive: got %v, want %v", got, tt.caseInsensitive)
@@ -30,6 +37,48 @@ func TestBackendCapabilities(t *testing.T) {
 				t.Errorf("CapSearchInFilenames: got %v, want %v", got, tt.searchInFilenames)
 			}
 		})
+	}
+}
+
+// TestNewBackendUnimplementedType checks that the error names both the backend
+// and the type, for a type the config knows and for one it does not.
+func TestNewBackendUnimplementedType(t *testing.T) {
+	for _, typ := range []BackendType{BackendTypeBitbucket, "svn", ""} {
+		b, err := NewBackend("mine", BackendConfig{Type: typ})
+		if err == nil {
+			t.Fatalf("type %q: got backend %v, want an error", typ, b)
+		}
+		for _, want := range []string{`"mine"`, fmt.Sprintf("%q", typ)} {
+			if !strings.Contains(err.Error(), want) {
+				t.Errorf("type %q: error %q does not contain %s", typ, err, want)
+			}
+		}
+	}
+}
+
+// TestNewBackendFailureIsNil checks that a constructor failure comes back as a
+// nil interface, not as a Backend wrapping a nil pointer.
+func TestNewBackendFailureIsNil(t *testing.T) {
+	b, err := NewBackend("mine", BackendConfig{Type: BackendTypeGithub, Params: BackendParams{}})
+	if err == nil {
+		t.Fatal("got nil error, want a failure for missing parameters")
+	}
+	if b != nil {
+		t.Errorf("got %#v, want a nil Backend", b)
+	}
+	if !strings.Contains(err.Error(), `"mine"`) {
+		t.Errorf("error %q does not name the backend", err)
+	}
+}
+
+// TestBackendConstructorsAreKnownTypes keeps the registry and the list of
+// recognised types consistent: an implemented type the config does not
+// recognise would be reported as unknown by Validate.
+func TestBackendConstructorsAreKnownTypes(t *testing.T) {
+	for typ := range backendConstructors {
+		if !slices.Contains(knownBackendTypes, typ) {
+			t.Errorf("type %q has a constructor but is not in knownBackendTypes", typ)
+		}
 	}
 }
 

@@ -20,7 +20,7 @@ type Github struct {
 	org         string
 }
 
-func (g *Github) New(name string, params BackendParams) (Backend, error) {
+func NewGithub(name string, params BackendParams) (*Github, error) {
 	org := params.GetString("org")
 	if org == nil {
 		return nil, fmt.Errorf("missing 'org' parameter")
@@ -49,7 +49,7 @@ func (g *Github) Org() string {
 	return g.org
 }
 
-func (g *Github) Type() string {
+func (g *Github) Type() BackendType {
 	return BackendTypeGithub
 }
 

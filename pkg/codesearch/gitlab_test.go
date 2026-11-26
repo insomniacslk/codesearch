@@ -46,11 +46,11 @@ func newGitlabBackend(t *testing.T, url string, params BackendParams) *Gitlab {
 	t.Helper()
 	params["token"] = "testtoken"
 	params["api_endpoint"] = url + "/api/v4"
-	b, err := (&Gitlab{}).New("test", params)
+	b, err := NewGitlab("test", params)
 	if err != nil {
 		t.Fatalf("failed to build backend: %v", err)
 	}
-	return b.(*Gitlab)
+	return b
 }
 
 // TestGitlabAddressesScopeDirectly checks that the group or project is passed
@@ -215,7 +215,7 @@ func TestGitlabPaginatesBlobs(t *testing.T) {
 }
 
 func TestGitlabRejectsGroupAndProjectTogether(t *testing.T) {
-	_, err := (&Gitlab{}).New("test", BackendParams{
+	_, err := NewGitlab("test", BackendParams{
 		"token":        "t",
 		"api_endpoint": "https://gitlab.example.com/api/v4",
 		"group":        "g",
@@ -361,7 +361,7 @@ func TestGitlabNumericScope(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			tt.params["token"] = "t"
 			tt.params["api_endpoint"] = "https://gitlab.example.com/api/v4"
-			b, err := (&Gitlab{}).New("test", tt.params)
+			gl, err := NewGitlab("test", tt.params)
 			if tt.wantErr != "" {
 				if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
 					t.Fatalf("got error %v, want one containing %q", err, tt.wantErr)
@@ -369,9 +369,8 @@ func TestGitlabNumericScope(t *testing.T) {
 				return
 			}
 			if err != nil {
-				t.Fatalf("New failed: %v", err)
+				t.Fatalf("NewGitlab failed: %v", err)
 			}
-			gl := b.(*Gitlab)
 			if gl.Group() != tt.wantGroup || gl.Project() != tt.wantProject {
 				t.Errorf("got group %q project %q, want %q and %q", gl.Group(), gl.Project(), tt.wantGroup, tt.wantProject)
 			}

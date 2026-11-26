@@ -172,7 +172,9 @@ func TestBackendsResolveTokens(t *testing.T) {
 				"org": "o", "api_endpoint": "https://api.github.com",
 				"token": "${CS_TEST_TOKEN}",
 			},
-			build: func(p BackendParams) (Backend, error) { return (&Github{}).New("t", p) },
+			build: func(p BackendParams) (Backend, error) {
+				return NewBackend("t", BackendConfig{Type: BackendTypeGithub, Params: p})
+			},
 			token: func(b Backend) string { return b.(*Github).token },
 		},
 		{
@@ -181,7 +183,9 @@ func TestBackendsResolveTokens(t *testing.T) {
 				"api_endpoint":  "https://gitlab.example.com/api/v4",
 				"token_command": "printf 'resolved-token'",
 			},
-			build: func(p BackendParams) (Backend, error) { return (&Gitlab{}).New("t", p) },
+			build: func(p BackendParams) (Backend, error) {
+				return NewBackend("t", BackendConfig{Type: BackendTypeGitlab, Params: p})
+			},
 			token: func(b Backend) string { return b.(*Gitlab).token },
 		},
 	} {
@@ -222,7 +226,7 @@ func TestValidateRejectsUnknownType(t *testing.T) {
 }
 
 func TestValidateAcceptsImplementedTypes(t *testing.T) {
-	for _, typ := range []BackendType{BackendTypeGithub, BackendTypeGitlab, BackendTypeCsearch} {
+	for typ := range backendConstructors {
 		c := Config{Backends: map[string]BackendConfig{"x": {Type: typ}}}
 		if err := c.Validate(); err != nil {
 			t.Errorf("type %q: got error %v, want nil", typ, err)
