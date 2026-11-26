@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/fatih/color"
+	"github.com/google/codesearch/index"
 	"github.com/insomniacslk/codesearch/pkg/codesearch"
 	"github.com/kirsle/configdir"
 	"github.com/sirupsen/logrus"
@@ -41,6 +42,9 @@ func resetConfigState(t *testing.T) {
 	flagCaseInsensitive = false
 	flagSearchInFilenames = false
 	flagMatchFilename = ""
+	flagTimeout = 0
+	flagJSON = false
+	searchBackends = ""
 
 	for name := range flagToConfigKey {
 		f := rootCmd.PersistentFlags().Lookup(name)
@@ -1057,6 +1061,8 @@ func runCommand(t *testing.T, args ...string) (stdout, stderr string, err error)
 		rootCmd.SetOut(nil)
 		rootCmd.SetErr(nil)
 		rootCmd.SetArgs(nil)
+		// set by a search whose failure summary was already printed
+		searchCmd.SilenceErrors = false
 	})
 	err = rootCmd.Execute()
 	return out.String(), errOut.String(), err
@@ -1495,4 +1501,147 @@ func TestNoColorEnvironment(t *testing.T) {
 			}
 		})
 	}
+}
+
+// newTestIndex writes files into a temporary tree and indexes it the way
+// cindex would. It mirrors the helper in pkg/codesearch, which a test in
+// another package cannot import.
+func newTestIndex(t *testing.T, files map[string]string) (indexFile, root string) {
+	t.Helper()
+	root = t.TempDir()
+	for name, content := range files {
+		p := filepath.Join(root, name)
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			t.Fatalf("failed to create dir for %q: %v", name, err)
+		}
+		if err := os.WriteFile(p, []byte(content), 0o644); err != nil {
+			t.Fatalf("failed to write %q: %v", name, err)
+		}
+	}
+	indexFile = filepath.Join(t.TempDir(), "csearchindex")
+	iw := index.Create(indexFile)
+	iw.AddPaths([]string{root})
+	for name := range files {
+		iw.AddFile(filepath.Join(root, name))
+	}
+	iw.Flush()
+	return indexFile, root
+}
+
+// searchTestConfig is a config with a working csearch backend called "local"
+// and, if broken is set, a second one called "broken" whose index is missing.
+func searchTestConfig(t *testing.T, broken bool) (*codesearch.Config, string) {
+	t.Helper()
+	indexFile, root := newTestIndex(t, map[string]string{
+		"a.go":     "package a\n\nfunc needle() {}\n",
+		"b/b.go":   "package b\n\n// no match here\n",
+		"c/c.txt":  "first\nsecond needle\n",
+		"skip.txt": "nothing\n",
+	})
+	cfg := &codesearch.Config{
+		DefaultBackends: []string{"local"},
+		Backends: map[string]codesearch.BackendConfig{
+			"local": {Type: codesearch.BackendTypeCsearch, Params: codesearch.BackendParams{"index_file": indexFile}},
+		},
+	}
+	if broken {
+		cfg.DefaultBackends = append(cfg.DefaultBackends, "broken")
+		cfg.Backends["broken"] = codesearch.BackendConfig{
+			Type:   codesearch.BackendTypeCsearch,
+			Params: codesearch.BackendParams{"index_file": filepath.Join(t.TempDir(), "missing")},
+		}
+	}
+	return cfg, root
+}
+
+func TestRunSearchEndToEnd(t *testing.T) {
+	resetConfigState(t)
+	old := color.NoColor
+	color.NoColor = true
+	defer func() { color.NoColor = old }()
+	cfg, root := searchTestConfig(t, false)
+	flagSort = "a-z"
+	flagSearchContextBefore = 1
+
+	var stdout, stderr bytes.Buffer
+	if err := runSearch(context.Background(), cfg, []string{"needle"}, &stdout, &stderr); err != nil {
+		t.Fatalf("got error %v, want nil; stderr:\n%s", err, stderr.String())
+	}
+	want := "local:" + root + ":a.go ()\n\n2: \n3: func needle() {}\n\n" +
+		"local:" + root + ":c/c.txt ()\n\n1: first\n2: second needle\n\n"
+	if got := stdout.String(); got != want {
+		t.Errorf("stdout:\ngot  %q\nwant %q", got, want)
+	}
+	for _, want := range []string{`Searching "needle" on ["local"]`, "Got 2 total results"} {
+		if !strings.Contains(stderr.String(), want) {
+			t.Errorf("stderr does not contain %q:\n%s", want, stderr.String())
+		}
+	}
+}
+
+// TestRunSearchPartialFailure checks that a failing backend does not cost the
+// results of the working one, and still makes the run fail.
+func TestRunSearchPartialFailure(t *testing.T) {
+	resetConfigState(t)
+	old := color.NoColor
+	color.NoColor = true
+	defer func() { color.NoColor = old }()
+	cfg, root := searchTestConfig(t, true)
+
+	var stdout, stderr bytes.Buffer
+	err := runSearch(context.Background(), cfg, []string{"func needle"}, &stdout, &stderr)
+	if !errors.Is(err, errReported) {
+		t.Fatalf("got error %v, want one wrapping errReported", err)
+	}
+	if want := "local:" + root + ":a.go ()\n\n3: func needle() {}\n\n"; stdout.String() != want {
+		t.Errorf("stdout:\ngot  %q\nwant %q", stdout.String(), want)
+	}
+	for _, want := range []string{"Got 1 total results", "\n1 of 2 backends failed:\n  broken: index "} {
+		if !strings.Contains(stderr.String(), want) {
+			t.Errorf("stderr does not contain %q:\n%s", want, stderr.String())
+		}
+	}
+}
+
+// TestSearchCommandErrorsPrintedOnce drives the cobra command: a failure that
+// runSearch has summarised must not be repeated as an "Error:" line, any other
+// failure must be printed once, and neither may dump the usage text.
+func TestSearchCommandErrorsPrintedOnce(t *testing.T) {
+	cfg, _ := searchTestConfig(t, true)
+	configYAML := "default_backends: [local, broken]\nbackends:\n"
+	for _, name := range []string{"local", "broken"} {
+		configYAML += fmt.Sprintf("  %s:\n    type: csearch\n    params:\n      index_file: %q\n",
+			name, cfg.Backends[name].Params["index_file"])
+	}
+	path := writeConfig(t, configYAML)
+
+	t.Run("summarised failure", func(t *testing.T) {
+		resetConfigState(t)
+		out, errOut, err := runCommand(t, "search", "-c", path, "needle")
+		if !errors.Is(err, errReported) {
+			t.Fatalf("got error %v, want errReported", err)
+		}
+		if !strings.Contains(out, "a.go") {
+			t.Errorf("stdout lacks the working backend's results:\n%s", out)
+		}
+		if strings.Count(errOut, "backends failed") != 1 || strings.Contains(errOut, "Error:") {
+			t.Errorf("want the summary once and no Error: line, got stderr:\n%s", errOut)
+		}
+		if strings.Contains(errOut, "Usage:") {
+			t.Errorf("stderr has the usage text:\n%s", errOut)
+		}
+	})
+	t.Run("plain failure", func(t *testing.T) {
+		resetConfigState(t)
+		_, errOut, err := runCommand(t, "search", "-c", path, "-b", "nosuch", "needle")
+		if err == nil {
+			t.Fatal("got nil error, want a failure for an unknown backend")
+		}
+		if got := strings.Count(errOut, `Error: backend "nosuch" not found`); got != 1 {
+			t.Errorf("error printed %d times, want once; stderr:\n%s", got, errOut)
+		}
+		if strings.Contains(errOut, "Usage:") {
+			t.Errorf("stderr has the usage text:\n%s", errOut)
+		}
+	})
 }
