@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -17,6 +18,7 @@ import (
 	"github.com/fatih/color"
 	"github.com/insomniacslk/codesearch/pkg/codesearch"
 	"github.com/kirsle/configdir"
+	"github.com/sirupsen/logrus"
 	"github.com/spf13/viper"
 )
 
@@ -1387,6 +1389,112 @@ func TestNegativeFlagsRejectedByPflag(t *testing.T) {
 			if err := f.Value.Set("-1"); err == nil {
 				_ = f.Value.Set(f.DefValue)
 				t.Errorf("--%s accepted -1", name)
+			}
+		})
+	}
+}
+
+// TestEnvironmentVariables covers AutomaticEnv without a prefix: an unrelated
+// DEBUG or STATS in the shell switched cs options on, while the nested keys
+// could not be reached from the environment at all.
+func TestEnvironmentVariables(t *testing.T) {
+	level := logrus.GetLevel()
+	t.Cleanup(func() { logrus.SetLevel(level) })
+
+	t.Run("bare names are ignored", func(t *testing.T) {
+		resetConfigState(t)
+		t.Setenv("DEBUG", "1")
+		t.Setenv("STATS", "1")
+		t.Setenv("DEFAULTS_LIMIT", "3")
+		configFile = writeConfig(t, testConfig)
+		if err := loadConfig(); err != nil {
+			t.Fatalf("failed to load config: %v", err)
+		}
+		if flagDebug || flagStats || flagLimit != 0 {
+			t.Errorf("got debug=%v stats=%v limit=%d, want them untouched", flagDebug, flagStats, flagLimit)
+		}
+	})
+	t.Run("CS_ names apply", func(t *testing.T) {
+		resetConfigState(t)
+		t.Setenv("CS_DEBUG", "1")
+		t.Setenv("CS_STATS", "true")
+		t.Setenv("CS_DEFAULTS_LIMIT", "7")
+		t.Setenv("CS_DEFAULTS_SORT", "z-a")
+		configFile = writeConfig(t, testConfig)
+		if err := loadConfig(); err != nil {
+			t.Fatalf("failed to load config: %v", err)
+		}
+		if !flagDebug || !flagStats || flagLimit != 7 || flagSort != "z-a" {
+			t.Errorf("got debug=%v stats=%v limit=%d sort=%q, want true true 7 z-a",
+				flagDebug, flagStats, flagLimit, flagSort)
+		}
+	})
+	t.Run("environment overrides the config file", func(t *testing.T) {
+		resetConfigState(t)
+		t.Setenv("CS_DEFAULTS_LIMIT", "7")
+		configFile = writeConfig(t, testConfig+"defaults:\n  limit: 5\n")
+		if err := loadConfig(); err != nil {
+			t.Fatalf("failed to load config: %v", err)
+		}
+		if flagLimit != 7 {
+			t.Errorf("got limit %d, want 7", flagLimit)
+		}
+	})
+	t.Run("command line overrides the environment", func(t *testing.T) {
+		resetConfigState(t)
+		t.Setenv("CS_DEFAULTS_LIMIT", "7")
+		configFile = writeConfig(t, testConfig+"defaults:\n  limit: 5\n")
+		setFlag(t, "limit", "10")
+		if err := loadConfig(); err != nil {
+			t.Fatalf("failed to load config: %v", err)
+		}
+		if flagLimit != 10 {
+			t.Errorf("got limit %d, want 10", flagLimit)
+		}
+	})
+	t.Run("a negative value from the environment is rejected", func(t *testing.T) {
+		resetConfigState(t)
+		t.Setenv("CS_DEFAULTS_LIMIT", "-1")
+		configFile = writeConfig(t, testConfig)
+		if err := loadConfig(); err == nil {
+			t.Errorf("got nil error, want a failure (limit=%d)", flagLimit)
+		}
+	})
+}
+
+// TestNoColorEnvironment checks that NO_COLOR still disables colours once
+// viper no longer maps it to no_color. fatih/color reads it only while the
+// package initialises, so the check needs a fresh process.
+func TestNoColorEnvironment(t *testing.T) {
+	if os.Getenv("CS_TEST_NO_COLOR_CHILD") == "1" {
+		// stdout is not a terminal under go test, which already turns colours
+		// off; undo that so only NO_COLOR is left to do it
+		color.NoColor = false
+		resetConfigState(t)
+		configFile = writeConfig(t, testConfig)
+		if err := loadConfig(); err != nil {
+			t.Fatalf("failed to load config: %v", err)
+		}
+		fmt.Printf("bold=%q red=%q\n", textBold.Sprint("x"), textBoldRed.Sprint("x"))
+		return
+	}
+	for _, tt := range []struct {
+		noColor   string
+		wantPlain bool
+	}{
+		{"1", true},
+		{"", false},
+	} {
+		t.Run(fmt.Sprintf("NO_COLOR=%q", tt.noColor), func(t *testing.T) {
+			cmd := exec.Command(os.Args[0], "-test.run=^TestNoColorEnvironment$", "-test.v")
+			cmd.Env = append(os.Environ(), "CS_TEST_NO_COLOR_CHILD=1", "NO_COLOR="+tt.noColor)
+			out, err := cmd.CombinedOutput()
+			if err != nil {
+				t.Fatalf("child failed: %v\n%s", err, out)
+			}
+			plain := strings.Contains(string(out), `bold="x" red="x"`)
+			if plain != tt.wantPlain {
+				t.Errorf("got plain=%v, want %v; output:\n%s", plain, tt.wantPlain, out)
 			}
 		})
 	}

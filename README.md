@@ -15,6 +15,30 @@ Create a file called `config.yml` in your configdir:
 Use the output of `cs config-example` to populate a sample config. Alternatively
 see the file[`config.yml.example`](/cmd/cs/config.yml.example).
 
+### Environment variables
+
+Every setting can also come from an environment variable named `CS_` followed
+by the config key in upper case, with `.` replaced by `_`:
+
+| Variable                         | Config key                     | Flag           |
+|----------------------------------|--------------------------------|----------------|
+| `CS_DEBUG`                       | `debug`                        | `--debug`      |
+| `CS_STATS`                       | `stats`                        | `--stats`      |
+| `CS_NO_COLOR`                    | `no_color`                     | `--no-color`   |
+| `CS_DEFAULTS_LIMIT`              | `defaults.limit`               | `--limit`      |
+| `CS_DEFAULTS_SORT`               | `defaults.sort`                | `--sort`       |
+| `CS_DEFAULTS_BEFORE`             | `defaults.before`              | `--before`     |
+| `CS_DEFAULTS_AFTER`              | `defaults.after`               | `--after`      |
+| `CS_DEFAULTS_CONTEXT`            | `defaults.context`             | `--context`    |
+| `CS_DEFAULTS_CASE_INSENSITIVE`   | `defaults.case_insensitive`    | `--case-insensitive` |
+| `CS_DEFAULTS_SEARCH_IN_FILENAMES`| `defaults.search_in_filenames` | `--search-in-filenames` |
+| `CS_DEFAULTS_MATCH_FILENAME`     | `defaults.match_filename`      | `--match-filename` |
+| `CS_DEFAULTS_TIMEOUT`            | `defaults.timeout`             | `--timeout`    |
+| `CS_DEFAULTS_JSON`               | `defaults.json`                | `--json`       |
+
+A flag on the command line wins over the environment, which wins over the config
+file. The standard `NO_COLOR` variable is honoured as well.
+
 Backend names are matched without regard to case, because the config loader
 lowercases them: `-b GitHub_Me` and `-b github_me` select the same backend.
 

@@ -219,6 +219,12 @@ func loadConfig() error {
 		viper.SetConfigType("yaml")
 		viper.AddConfigPath(configdir.LocalConfig(progname))
 	}
+	// only CS_ variables count: without a prefix an unrelated DEBUG or STATS in
+	// the shell would switch options on. The replacer makes the nested keys
+	// reachable, e.g. CS_DEFAULTS_LIMIT for defaults.limit. NO_COLOR does not go
+	// through here; fatih/color reads it by itself.
+	viper.SetEnvPrefix("CS")
+	viper.SetEnvKeyReplacer(strings.NewReplacer(".", "_"))
 	viper.AutomaticEnv()
 
 	if err := viper.ReadInConfig(); err != nil {
