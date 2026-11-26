@@ -423,21 +423,42 @@ func TestGithubFileURLAnchorMatchesLineno(t *testing.T) {
 	}
 }
 
+// githubAssertFragmentResult checks the fallback result built from the search
+// fragment when the file content cannot be used.
+func githubAssertFragmentResult(t *testing.T, results Results, wantLine string) {
+	t.Helper()
+	if len(results) != 1 {
+		t.Fatalf("got %d results, want 1", len(results))
+	}
+	r := results[0]
+	if r.Line != wantLine {
+		t.Errorf("line: got %q, want %q", r.Line, wantLine)
+	}
+	if r.Lineno != 0 {
+		t.Errorf("lineno: got %d, want 0 (unknown)", r.Lineno)
+	}
+	if got, want := r.Line[r.Highlight[0]:r.Highlight[1]], "needle"; got != want {
+		t.Errorf("highlight: got %q, want %q", got, want)
+	}
+	if strings.Contains(r.FileURL, "#") {
+		t.Errorf("file URL %q has a line anchor for an unknown line", r.FileURL)
+	}
+}
+
 // TestGithubSearchLargeFile covers the >1MB case, where GitHub reports
 // encoding "none" and omits the content entirely. The old code dereferenced
-// Content unconditionally and panicked.
+// Content unconditionally and panicked; later it failed the whole search. The
+// match is still worth showing, from the fragment.
 func TestGithubSearchLargeFile(t *testing.T) {
 	srv := githubServer(t, codeResultJSON("src/f.go", "needle", 0, 6),
 		fileContents(`{"type":"file","encoding":"none","name":"f.go","path":"src/f.go","size":2000000}`))
 	defer srv.Close()
 
-	_, err := newGithubBackend(t, srv.URL).Search(context.Background(), "needle", SearchOptions{})
-	if err == nil {
-		t.Fatal("got nil error, want a failure for an unfetchable file")
+	results, err := newGithubBackend(t, srv.URL).Search(context.Background(), "needle", SearchOptions{})
+	if err != nil {
+		t.Fatalf("search failed: %v", err)
 	}
-	if !strings.Contains(err.Error(), "src/f.go") {
-		t.Errorf("error %q does not name the file", err)
-	}
+	githubAssertFragmentResult(t, results, "needle")
 }
 
 // TestGithubSearchNullContent covers a file entry whose content field is
@@ -447,9 +468,11 @@ func TestGithubSearchNullContent(t *testing.T) {
 		fileContents(`{"type":"file","encoding":"base64","name":"f.go","path":"src/f.go"}`))
 	defer srv.Close()
 
-	if _, err := newGithubBackend(t, srv.URL).Search(context.Background(), "needle", SearchOptions{}); err == nil {
-		t.Fatal("got nil error, want a failure for a file with no content")
+	results, err := newGithubBackend(t, srv.URL).Search(context.Background(), "needle", SearchOptions{})
+	if err != nil {
+		t.Fatalf("search failed: %v", err)
 	}
+	githubAssertFragmentResult(t, results, "needle")
 }
 
 // TestGithubSearchDirectoryResponse covers GetContents returning a directory
@@ -459,13 +482,11 @@ func TestGithubSearchDirectoryResponse(t *testing.T) {
 		fileContents(`[{"type":"file","name":"f.go","path":"src/f.go"}]`))
 	defer srv.Close()
 
-	_, err := newGithubBackend(t, srv.URL).Search(context.Background(), "needle", SearchOptions{})
-	if err == nil {
-		t.Fatal("got nil error, want a failure when the path is a directory")
+	results, err := newGithubBackend(t, srv.URL).Search(context.Background(), "needle", SearchOptions{})
+	if err != nil {
+		t.Fatalf("search failed: %v", err)
 	}
-	if !strings.Contains(err.Error(), "no file content") {
-		t.Errorf("got error %q, want it to mention missing file content", err)
-	}
+	githubAssertFragmentResult(t, results, "needle")
 }
 
 // TestGithubSearchSparseResult covers results where GitHub omits optional
@@ -803,6 +824,116 @@ func TestGithubPathMatchIsSkipped(t *testing.T) {
 	// a path-only hit needs no file content
 	if got := atomic.LoadInt32(&fetches); got != 1 {
 		t.Errorf("got %d content fetches, want 1", got)
+	}
+}
+
+// TestGithubStaleIndex is the regression test for a file that changed after
+// GitHub indexed it: the fragment is not in the current content, which used
+// to fail the whole search. The fragment itself is shown instead, and the
+// other file is unaffected.
+func TestGithubStaleIndex(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.Contains(r.URL.Path, "/search/code"):
+			items := githubItem("src/stale.go",
+				`{"property":"content","fragment":"a\nb\nold needle\nc\nd","matches":[{"indices":[8,14]}]}`) +
+				"," + codeResultJSON("src/good.go", "func needle() {}", 5, 11)
+			searchPage(w, r, items, 0)
+		case strings.Contains(r.URL.Path, "/stale.go"):
+			_, _ = fmt.Fprint(w, base64File("rewritten entirely\n"))
+		case strings.Contains(r.URL.Path, "/good.go"):
+			_, _ = fmt.Fprint(w, base64File("package main\n\nfunc needle() {}\n"))
+		default:
+			t.Errorf("unexpected request to %s", r.URL.Path)
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+
+	results, err := newGithubBackend(t, srv.URL).Search(context.Background(), "needle",
+		SearchOptions{LinesBefore: 1, LinesAfter: 5})
+	if err != nil {
+		t.Fatalf("search failed: %v", err)
+	}
+	if len(results) != 2 {
+		t.Fatalf("got %d results, want 2", len(results))
+	}
+	githubAssertFragmentResult(t, results[:1], "old needle")
+	stale := results[0]
+	if got, want := strings.Join(stale.Context.Before, "|"), "b"; got != want {
+		t.Errorf("before: got %q, want %q", got, want)
+	}
+	// limited to what the fragment holds
+	if got, want := strings.Join(stale.Context.After, "|"), "c|d"; got != want {
+		t.Errorf("after: got %q, want %q", got, want)
+	}
+	if got, want := stale.FileURL, "https://example.com/testorg/repo/blob/main/src/stale.go"; got != want {
+		t.Errorf("file URL: got %q, want %q", got, want)
+	}
+	if got, want := results[1].Lineno, 3; got != want {
+		t.Errorf("good file lineno: got %d, want %d", got, want)
+	}
+}
+
+// TestGithubFailedFetchDegradesPerFile checks that a file that cannot be
+// fetched costs only its own matches, and is requested once however many
+// matches it has.
+func TestGithubFailedFetchDegradesPerFile(t *testing.T) {
+	var missing int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.Contains(r.URL.Path, "/search/code"):
+			items := githubItem("src/gone.go",
+				`{"property":"content","fragment":"needle one","matches":[{"indices":[0,6]}]},
+				 {"property":"content","fragment":"needle two","matches":[{"indices":[0,6]}]}`) +
+				"," + codeResultJSON("src/good.go", "func needle() {}", 5, 11)
+			searchPage(w, r, items, 0)
+		case strings.Contains(r.URL.Path, "/gone.go"):
+			atomic.AddInt32(&missing, 1)
+			w.WriteHeader(http.StatusNotFound)
+			_, _ = fmt.Fprint(w, `{"message":"Not Found"}`)
+		case strings.Contains(r.URL.Path, "/good.go"):
+			_, _ = fmt.Fprint(w, base64File("package main\n\nfunc needle() {}\n"))
+		default:
+			t.Errorf("unexpected request to %s", r.URL.Path)
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+
+	results, err := newGithubBackend(t, srv.URL).Search(context.Background(), "needle", SearchOptions{})
+	if err != nil {
+		t.Fatalf("search failed: %v", err)
+	}
+	if len(results) != 3 {
+		t.Fatalf("got %d results, want 3", len(results))
+	}
+	for i, want := range []string{"needle one", "needle two"} {
+		if results[i].Line != want || results[i].Lineno != 0 {
+			t.Errorf("result %d: got line %q lineno %d, want %q and 0", i, results[i].Line, results[i].Lineno, want)
+		}
+	}
+	if got := atomic.LoadInt32(&missing); got != 1 {
+		t.Errorf("got %d fetches of the missing file, want 1", got)
+	}
+}
+
+// TestGithubRateLimitedFetchAbortsSearch: unlike a missing file, a rate limit
+// applies to every remaining file, so it must still end the search.
+func TestGithubRateLimitedFetchAbortsSearch(t *testing.T) {
+	srv := githubServer(t, codeResultJSON("src/f.go", "needle", 0, 6), func(w http.ResponseWriter) {
+		w.Header().Set("X-RateLimit-Limit", "5000")
+		w.Header().Set("X-RateLimit-Remaining", "0")
+		w.Header().Set("X-RateLimit-Reset", strconv.FormatInt(time.Now().Add(time.Hour).Unix(), 10))
+		w.WriteHeader(http.StatusForbidden)
+		_, _ = fmt.Fprint(w, `{"message":"API rate limit exceeded"}`)
+	})
+	defer srv.Close()
+
+	_, err := newGithubBackend(t, srv.URL).Search(context.Background(), "needle", SearchOptions{})
+	var rlErr *github.RateLimitError
+	if !errors.As(err, &rlErr) {
+		t.Fatalf("got error %v, want a RateLimitError", err)
 	}
 }
 
