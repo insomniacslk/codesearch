@@ -162,6 +162,11 @@ func (c *Config) Validate() error {
 		if BackendTypeByName(string(backend.Type)) == BackendTypeUnknown {
 			return fmt.Errorf("unknown backend type %q", backend.Type)
 		}
+		// known to the config but with no implementation behind it, so fail
+		// here rather than at search time
+		if BackendByType(backend.Type) == nil {
+			return fmt.Errorf("backend %q: type %q is not implemented", name, backend.Type)
+		}
 	}
 	return nil
 }

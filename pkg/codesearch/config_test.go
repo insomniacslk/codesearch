@@ -197,6 +197,39 @@ func TestBackendsResolveTokens(t *testing.T) {
 	}
 }
 
+// TestValidateRejectsUnimplementedType covers bitbucket passing validation and
+// failing only once a search tried to instantiate it.
+func TestValidateRejectsUnimplementedType(t *testing.T) {
+	c := Config{Backends: map[string]BackendConfig{"bb": {Type: BackendTypeBitbucket}}}
+	err := c.Validate()
+	if err == nil {
+		t.Fatal("got nil error, want a failure for bitbucket")
+	}
+	if !strings.Contains(err.Error(), "not implemented") {
+		t.Errorf("error %q does not say the type is not implemented", err)
+	}
+}
+
+func TestValidateRejectsUnknownType(t *testing.T) {
+	c := Config{Backends: map[string]BackendConfig{"x": {Type: "svn"}}}
+	err := c.Validate()
+	if err == nil {
+		t.Fatal("got nil error, want a failure for an unknown type")
+	}
+	if !strings.Contains(err.Error(), `unknown backend type "svn"`) {
+		t.Errorf("error %q does not report the type as unknown", err)
+	}
+}
+
+func TestValidateAcceptsImplementedTypes(t *testing.T) {
+	for _, typ := range []BackendType{BackendTypeGithub, BackendTypeGitlab, BackendTypeCsearch} {
+		c := Config{Backends: map[string]BackendConfig{"x": {Type: typ}}}
+		if err := c.Validate(); err != nil {
+			t.Errorf("type %q: got error %v, want nil", typ, err)
+		}
+	}
+}
+
 // TestValidateBackendNamesIgnoreCase covers a default backend written with
 // different case from the key under backends, which viper lowercases.
 func TestValidateBackendNamesIgnoreCase(t *testing.T) {
