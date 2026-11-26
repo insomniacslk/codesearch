@@ -317,7 +317,7 @@ func TestSelectFilenames(t *testing.T) {
 	}
 	t.Run("deduplicates and sorts", func(t *testing.T) {
 		var got []string
-		for _, r := range selectFilenames(results, 0) {
+		for _, r := range selectFilenames(results, 0, false) {
 			got = append(got, r.Path)
 		}
 		if want := []string{"cmd/main.go", "pkg/main.go"}; !equalStrings(got, want) {
@@ -325,7 +325,7 @@ func TestSelectFilenames(t *testing.T) {
 		}
 	})
 	t.Run("limit counts unique names", func(t *testing.T) {
-		got := selectFilenames(results, 1)
+		got := selectFilenames(results, 1, false)
 		if len(got) != 1 {
 			t.Fatalf("got %d results, want 1", len(got))
 		}
@@ -337,7 +337,7 @@ func TestSelectFilenames(t *testing.T) {
 		dupes := codesearch.Results{
 			{Path: "same.go"}, {Path: "same.go"}, {Path: "same.go"}, {Path: "other.go"},
 		}
-		got := selectFilenames(dupes, 2)
+		got := selectFilenames(dupes, 2, false)
 		if len(got) != 2 {
 			t.Fatalf("got %d results, want 2", len(got))
 		}
@@ -354,7 +354,7 @@ func TestSelectFilenamesKeepsNonLiteralMatches(t *testing.T) {
 		{Path: "cmd/cs/main.go", IsFilename: true},
 		{Path: "pkg/codesearch/github.go", IsFilename: true},
 	}
-	got := selectFilenames(results, 0)
+	got := selectFilenames(results, 0, false)
 	if len(got) != len(results) {
 		t.Fatalf("got %d results, want %d", len(got), len(results))
 	}
@@ -1286,4 +1286,59 @@ func TestResolveBackendNamesUnknown(t *testing.T) {
 	if !strings.Contains(err.Error(), `"nope"`) {
 		t.Errorf("error %q does not name the backend", err)
 	}
+}
+
+// TestSelectFilenamesAcrossRoots covers the regression where -F deduplicated on
+// the path alone: a csearch index with two roots that both hold README.md
+// printed only one of them.
+func TestSelectFilenamesAcrossRoots(t *testing.T) {
+	results := codesearch.Results{
+		{Path: "README.md", RepoURL: "file:///b"},
+		{Path: "README.md", RepoURL: "file:///a"},
+		{Path: "README.md", RepoURL: "file:///b"},
+	}
+	got := selectFilenames(results, 0, false)
+	if len(got) != 2 {
+		t.Fatalf("got %d results, want 2", len(got))
+	}
+	// same path, so the repository breaks the tie
+	if got[0].RepoURL != "file:///a" || got[1].RepoURL != "file:///b" {
+		t.Errorf("got %q then %q, want file:///a then file:///b", got[0].RepoURL, got[1].RepoURL)
+	}
+}
+
+// TestSelectFilenamesOrderAndLimit covers -F ignoring --sort z-a, and the limit
+// being applied before the sort, which kept an arbitrary subset rather than
+// the first names in the printed order.
+func TestSelectFilenamesOrderAndLimit(t *testing.T) {
+	results := codesearch.Results{
+		{Path: "c.go"}, {Path: "a.go"}, {Path: "d.go"}, {Path: "b.go"},
+	}
+	paths := func(rs []*codesearch.Result) []string {
+		var out []string
+		for _, r := range rs {
+			out = append(out, r.Path)
+		}
+		return out
+	}
+	t.Run("limit applies after the default order", func(t *testing.T) {
+		got := paths(selectFilenames(append(codesearch.Results{}, results...), 2, false))
+		if want := []string{"a.go", "b.go"}; !equalStrings(got, want) {
+			t.Errorf("got %q, want %q", got, want)
+		}
+	})
+	t.Run("sort z-a is kept", func(t *testing.T) {
+		sorted := getSorter("z-a")(append(codesearch.Results{}, results...))
+		got := paths(selectFilenames(sorted, 0, true))
+		if want := []string{"d.go", "c.go", "b.go", "a.go"}; !equalStrings(got, want) {
+			t.Errorf("got %q, want %q", got, want)
+		}
+	})
+	t.Run("sort z-a with a limit", func(t *testing.T) {
+		sorted := getSorter("z-a")(append(codesearch.Results{}, results...))
+		got := paths(selectFilenames(sorted, 2, true))
+		if want := []string{"d.go", "c.go"}; !equalStrings(got, want) {
+			t.Errorf("got %q, want %q", got, want)
+		}
+	})
 }
