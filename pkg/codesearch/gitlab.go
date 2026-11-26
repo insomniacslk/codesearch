@@ -32,7 +32,7 @@ func (g *Gitlab) New(name string, params BackendParams) (Backend, error) {
 	}
 	apiEndpoint := params.GetString("api_endpoint")
 	if apiEndpoint == nil {
-		return nil, fmt.Errorf("missing 'apiEndpoint' parameter")
+		return nil, fmt.Errorf("missing 'api_endpoint' parameter")
 	}
 	gl := Gitlab{
 		name:        name,
@@ -56,7 +56,7 @@ func (g *Gitlab) Group() string {
 	return g.group
 }
 
-func (g *Gitlab) Projet() string {
+func (g *Gitlab) Project() string {
 	return g.project
 }
 

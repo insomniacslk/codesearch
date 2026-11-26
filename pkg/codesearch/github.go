@@ -31,7 +31,7 @@ func (g *Github) New(name string, params BackendParams) (Backend, error) {
 	}
 	apiEndpoint := params.GetString("api_endpoint")
 	if apiEndpoint == nil {
-		return nil, fmt.Errorf("missing 'apiEndpoint' parameter")
+		return nil, fmt.Errorf("missing 'api_endpoint' parameter")
 	}
 	return &Github{
 		name:        name,
