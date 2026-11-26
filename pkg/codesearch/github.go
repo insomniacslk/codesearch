@@ -286,22 +286,12 @@ func (g *Github) toResult(ctx context.Context, client *github.Client, csresults 
 					return nil, fmt.Errorf("invalid file URL %q: %q", res.GetHTMLURL(), err)
 				}
 				fileURLwithLineno.Fragment = fmt.Sprintf("L%d", lineno)
-				beforeIdx := lineno - 1 - opts.LinesBefore
-				if beforeIdx < 0 {
-					beforeIdx = 0
-				}
-				afterIdx := lineno + opts.LinesAfter
-				if afterIdx > len(lines) {
-					afterIdx = len(lines)
-				}
+				before, after := contextLines(lines, lineno, opts.LinesBefore, opts.LinesAfter)
 				result := Result{
-					Backend: g.Name(),
-					Line:    line,
-					Lineno:  lineno,
-					Context: ResultContext{
-						Before: lines[beforeIdx : lineno-1],
-						After:  lines[lineno:afterIdx],
-					},
+					Backend:   g.Name(),
+					Line:      line,
+					Lineno:    lineno,
+					Context:   ResultContext{Before: before, After: after},
 					Highlight: [2]int{startInLine, startInLine + length},
 					Path:      res.GetPath(),
 					RepoURL:   res.GetRepository().GetHTMLURL(),
