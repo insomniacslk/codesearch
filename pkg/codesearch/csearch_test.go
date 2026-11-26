@@ -491,3 +491,26 @@ func TestCsearchValidIndexStillOpens(t *testing.T) {
 		t.Errorf("got %d results, want 1", len(results))
 	}
 }
+
+// TestCsearchSkipsStaleFiles covers a file deleted after cindex ran: the index
+// is a snapshot, so this is the normal state, and it used to fail the whole
+// search with "match reader failed" instead of returning the other hits.
+func TestCsearchSkipsStaleFiles(t *testing.T) {
+	indexFile, root := newTestIndex(t, map[string]string{
+		"a.go": "needle\n",
+		"b.go": "needle\n",
+		"c.go": "needle\n",
+	})
+	if err := os.Remove(filepath.Join(root, "a.go")); err != nil {
+		t.Fatalf("failed to remove: %v", err)
+	}
+	for _, opts := range []SearchOptions{{}, {LinesBefore: 1, LinesAfter: 1}} {
+		results, err := newCsearchBackend(t, indexFile).Search(context.Background(), "needle", opts)
+		if err != nil {
+			t.Fatalf("opts %+v: search failed: %v", opts, err)
+		}
+		if got, want := resultPaths(results), []string{"b.go", "c.go"}; !equalLines(got, want) {
+			t.Errorf("opts %+v: got %q, want %q", opts, got, want)
+		}
+	}
+}

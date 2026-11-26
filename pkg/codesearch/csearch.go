@@ -231,10 +231,16 @@ func (g *Csearch) toResult(ctx context.Context, pattern string, ix *index.Index,
 		b := grep.Stdout.(*bytes.Buffer)
 		o := b.String()
 		b.Reset()
+		eb := grep.Stderr.(*bytes.Buffer)
+		e := strings.TrimSpace(eb.String())
+		eb.Reset()
 		if o == "" {
-			e := grep.Stderr.(*bytes.Buffer).String()
 			if e != "" {
-				return nil, fmt.Errorf("match reader failed: %s", e)
+				// the index is a snapshot, so files that were deleted or
+				// made unreadable since cindex ran are the normal case and
+				// must not cost the hits from every other file
+				logrus.Warnf("Skipping %q: %s", name, e)
+				continue
 			}
 			// no output, no error, just continue
 			logrus.Debugf("Skipping empty file results")
