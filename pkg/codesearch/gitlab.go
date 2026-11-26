@@ -3,7 +3,10 @@ package codesearch
 import (
 	"context"
 	"fmt"
+	"math"
 	"net/url"
+	"regexp"
+	"strconv"
 	"strings"
 
 	"github.com/sirupsen/logrus"
@@ -20,9 +23,15 @@ type Gitlab struct {
 }
 
 func (g *Gitlab) New(name string, params BackendParams) (Backend, error) {
-	group := params.GetString("group")
-	project := params.GetString("project")
-	if group != nil && project != nil {
+	group, err := gitlabScopeParam(params, "group")
+	if err != nil {
+		return nil, err
+	}
+	project, err := gitlabScopeParam(params, "project")
+	if err != nil {
+		return nil, err
+	}
+	if group != "" && project != "" {
 		return nil, fmt.Errorf("cannot specify both 'project' and 'group'")
 	}
 	token, err := params.ResolveToken()
@@ -31,20 +40,37 @@ func (g *Gitlab) New(name string, params BackendParams) (Backend, error) {
 	}
 	apiEndpoint := params.GetString("api_endpoint")
 	if apiEndpoint == nil {
-		return nil, fmt.Errorf("missing 'apiEndpoint' parameter")
+		return nil, fmt.Errorf("missing 'api_endpoint' parameter")
 	}
-	gl := Gitlab{
+	return &Gitlab{
 		name:        name,
 		token:       token,
 		apiEndpoint: *apiEndpoint,
+		group:       group,
+		project:     project,
+	}, nil
+}
+
+// gitlabScopeParam reads a group or project, which may be a numeric ID or a
+// full path. YAML decodes a bare number as an int or a float, and GetString
+// would drop it, silently widening the search to every project the token can
+// see; so numbers are accepted and any other type is an error.
+func gitlabScopeParam(params BackendParams, key string) (string, error) {
+	switch v := params.Get(key).(type) {
+	case nil:
+		return "", nil
+	case string:
+		return v, nil
+	case int, int8, int16, int32, int64, uint, uint8, uint16, uint32, uint64:
+		return fmt.Sprint(v), nil
+	case float64:
+		if v == math.Trunc(v) && !math.IsInf(v, 0) {
+			return strconv.FormatFloat(v, 'f', -1, 64), nil
+		}
+		return "", fmt.Errorf("parameter '%s' must be an integer ID or a path, got %v", key, v)
+	default:
+		return "", fmt.Errorf("parameter '%s' must be an integer ID or a path, got %T", key, v)
 	}
-	if group != nil {
-		gl.group = *group
-	}
-	if project != nil {
-		gl.project = *project
-	}
-	return &gl, nil
 }
 
 func (g *Gitlab) Name() string {
@@ -55,7 +81,7 @@ func (g *Gitlab) Group() string {
 	return g.group
 }
 
-func (g *Gitlab) Projet() string {
+func (g *Gitlab) Project() string {
 	return g.project
 }
 
@@ -165,54 +191,76 @@ func (g *Gitlab) toResult(client *gitlab.Client, withCtx gitlab.RequestOptionFun
 		logrus.Debugf("  Project Name: %s", projects[blob.ProjectID].Name)
 
 		project := projects[blob.ProjectID]
-		startOffset := strings.Index(strings.ToLower(blob.Data), strings.ToLower(searchString))
-		var (
-			start, end int
-			line       string
-		)
-		result := Result{
-			Backend:    g.Name(),
-			IsFilename: false,
-			Path:       blob.Path,
-			RepoURL:    project.WebURL,
-			FileURL:    fmt.Sprintf("%s/-/blob/%s/%s", project.WebURL, project.DefaultBranch, blob.Path),
-			Owner:      project.Namespace.Path,
-			RepoName:   project.Path,
-			Branch:     project.DefaultBranch,
+		// a project without a namespace should not happen, but the field is
+		// a pointer and a crash would lose every other result
+		var owner string
+		if project.Namespace != nil {
+			owner = project.Namespace.Path
 		}
-		if startOffset == -1 {
+		result := Result{
+			Backend:  g.Name(),
+			Path:     blob.Path,
+			RepoURL:  project.WebURL,
+			FileURL:  fmt.Sprintf("%s/-/blob/%s/%s", project.WebURL, project.DefaultBranch, blob.Path),
+			Owner:    owner,
+			RepoName: project.Path,
+			Branch:   project.DefaultBranch,
+		}
+		lines := strings.Split(blob.Data, "\n")
+		idx, highlight, ok := gitlabLocate(lines, searchString)
+		if blob.Data == "" || (!ok && gitlabMatchesPath(blob.Path, searchString)) {
 			// The search pattern was found in the file name, not in the file
 			// content, so it's marked as such. Line, StartLine, Lineno, Context
 			// and Highlight are not set
 			result.IsFilename = true
 		} else {
-			lines := strings.Split(blob.Data, "\n")
-			linenoInBlob := strings.Count(blob.Data[:startOffset], "\n")
-			line = lines[linenoInBlob]
-			start = strings.Index(strings.ToLower(line), strings.ToLower(searchString))
-			end = start + len(searchString)
+			// When nothing can be located (e.g. advanced search syntax), GitLab
+			// still returned content that matched, so the snippet's first line
+			// is reported without a highlight rather than dropped.
 			// TODO fetch entire file content if the requested context is longer
 			// than the available one
-			beforeIdx := linenoInBlob - opts.LinesBefore
-			if beforeIdx < 0 {
-				beforeIdx = 0
-			}
-			afterIdx := linenoInBlob + opts.LinesAfter + 1
-			if afterIdx > len(lines) {
-				afterIdx = len(lines)
-			}
-			result.Lineno = int(blob.Startline)
-			result.Context = ResultContext{
-				Before: lines[beforeIdx:linenoInBlob],
-				After:  lines[linenoInBlob+1 : afterIdx],
-			}
-			result.Highlight = [2]int{start, end}
-			result.Line = line
-			result.Lineno = int(blob.Startline) + linenoInBlob
+			lineno := int(blob.Startline) + idx
+			result.Line = lines[idx]
+			result.Lineno = lineno
+			result.Highlight = highlight
+			result.Context.Before, result.Context.After = contextLines(lines, idx+1, opts.LinesBefore, opts.LinesAfter)
 			// add line fragment to URL
-			result.FileURL = fmt.Sprintf("%s/-/blob/%s/%s#L%d", project.WebURL, project.DefaultBranch, blob.Path, int(blob.Startline)+linenoInBlob)
+			result.FileURL = fmt.Sprintf("%s/-/blob/%s/%s#L%d", project.WebURL, project.DefaultBranch, blob.Path, lineno)
 		}
 		results = append(results, result)
 	}
 	return results, nil
+}
+
+// gitlabLocate finds the line a blob matched on and the match within it. The
+// whole query is tried first; failing that, its individual terms, because
+// GitLab's advanced search tokenises the query and a blob can match without
+// containing it verbatim. Offsets come from a case-insensitive regexp on the
+// original text, as lowercasing can change byte lengths (e.g. "İ").
+func gitlabLocate(lines []string, searchString string) (int, [2]int, bool) {
+	for _, patterns := range [][]string{{searchString}, strings.Fields(searchString)} {
+		var res []*regexp.Regexp
+		for _, p := range patterns {
+			res = append(res, regexp.MustCompile("(?i)"+regexp.QuoteMeta(p)))
+		}
+		for i, line := range lines {
+			for _, re := range res {
+				if loc := re.FindStringIndex(line); loc != nil {
+					return i, [2]int{loc[0], loc[1]}, true
+				}
+			}
+		}
+	}
+	return 0, [2]int{}, false
+}
+
+// gitlabMatchesPath reports whether any term of the query occurs in the path.
+func gitlabMatchesPath(path, searchString string) bool {
+	path = strings.ToLower(path)
+	for _, term := range strings.Fields(searchString) {
+		if strings.Contains(path, strings.ToLower(term)) {
+			return true
+		}
+	}
+	return false
 }

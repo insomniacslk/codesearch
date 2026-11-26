@@ -9,6 +9,7 @@ import (
 	"io"
 	"io/fs"
 	"log"
+	"math"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -22,6 +23,7 @@ import (
 	"github.com/insomniacslk/codesearch/pkg/codesearch"
 	"github.com/kirsle/configdir"
 	"github.com/sirupsen/logrus"
+	"github.com/spf13/cast"
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
 )
@@ -69,9 +71,9 @@ func init() {
 	searchCmd.PersistentFlags().StringVarP(&searchBackends, "backends", "b", "", "Comma-separated list of names of the backends to use. The names are defined in your configuration file. If specified, it overrides `default_backends` in the configuration file. \"all\" will use every backend")
 	searchCmd.PersistentFlags().BoolVarP(&flagSearchInFilenames, "search-in-filenames", "F", false, "Search only in file names")
 	searchCmd.PersistentFlags().StringVarP(&flagMatchFilename, "match-filename", "f", "", "Show results only from files whose path matches this regexp. Unanchored and case-insensitive, so \".go\" matches anywhere in the path and \"\\.go$\" only at the end")
-	searchCmd.PersistentFlags().IntVarP(&flagSearchContextBefore, "before", "B", 0, "Number of context lines to show before the result")
-	searchCmd.PersistentFlags().IntVarP(&flagSearchContextAfter, "after", "A", 0, "Number of context lines to show after the result")
-	searchCmd.PersistentFlags().IntVarP(&flagSearchContext, "context", "C", 0, "Number of context lines to show on both sides of the result. A non-zero --before or --after takes precedence over it")
+	searchCmd.PersistentFlags().UintP("before", "B", 0, "Number of context lines to show before the result")
+	searchCmd.PersistentFlags().UintP("after", "A", 0, "Number of context lines to show after the result")
+	searchCmd.PersistentFlags().UintP("context", "C", 0, "Number of context lines to show on both sides of the result. A non-zero --before or --after takes precedence over it")
 	searchCmd.PersistentFlags().BoolVarP(&flagCaseInsensitive, "case-insensitive", "i", false, "Case-insensitive search")
 	searchCmd.PersistentFlags().UintVarP(&flagLimit, "limit", "l", 0, "Limit the amount of results that are printed per backend. 0 means no limit. Unless --sort, --match-filename or -F is in play, backends stop fetching once the limit is met, which matters on rate-limited APIs")
 	searchCmd.PersistentFlags().StringVarP(&flagSort, "sort", "s", "", "Sort the results. Possible values: \"a-z\", \"z-a\"")
@@ -120,18 +122,49 @@ func bindFlags() {
 	}
 }
 
+// unsignedSetting reads a count that cannot be negative. On the command line
+// the flags are unsigned, so pflag refuses a negative value by itself. A value
+// from the config file or the environment gets no such check: viper.GetUint
+// drops the conversion error and returns 0, which would hide the mistake, and
+// GetInt would let a negative context through to the backends and wrap a
+// negative limit round to a huge number. The result stays an int because the
+// backends subtract with it, and unsigned arithmetic would wrap there instead.
+func unsignedSetting(flag string) (int, error) {
+	key := flagToConfigKey[flag]
+	raw := viper.Get(key)
+	n, err := cast.ToUintE(raw)
+	if err != nil {
+		return 0, fmt.Errorf("invalid value %v for --%s (%s): %w", raw, flag, key, err)
+	}
+	if n > math.MaxInt32 {
+		return 0, fmt.Errorf("invalid value %v for --%s (%s): too large", raw, flag, key)
+	}
+	return int(n), nil
+}
+
 // resolveFlags applies the effective value of every bound flag, so that
 // settings coming from the config file are honoured when the flag was not
 // passed on the command line.
-func resolveFlags() {
+func resolveFlags() error {
 	flagDebug = viper.GetBool("debug")
 	flagStats = viper.GetBool("stats")
-	flagLimit = uint(viper.GetInt("defaults.limit"))
+	limit, err := unsignedSetting("limit")
+	if err != nil {
+		return err
+	}
+	flagLimit = uint(limit)
 	flagSort = viper.GetString("defaults.sort")
-	flagSearchContextBefore = viper.GetInt("defaults.before")
-	flagSearchContextAfter = viper.GetInt("defaults.after")
+	if flagSearchContextBefore, err = unsignedSetting("before"); err != nil {
+		return err
+	}
+	if flagSearchContextAfter, err = unsignedSetting("after"); err != nil {
+		return err
+	}
+	if flagSearchContext, err = unsignedSetting("context"); err != nil {
+		return err
+	}
 	// -C supplies both sides; a side that was asked for explicitly wins
-	if flagSearchContext = viper.GetInt("defaults.context"); flagSearchContext > 0 {
+	if flagSearchContext > 0 {
 		if flagSearchContextBefore == 0 {
 			flagSearchContextBefore = flagSearchContext
 		}
@@ -154,6 +187,7 @@ func resolveFlags() {
 	if flagDebug {
 		logrus.SetLevel(logrus.DebugLevel)
 	}
+	return nil
 }
 
 // configPath is where the configuration is expected, for error messages.
@@ -185,6 +219,12 @@ func loadConfig() error {
 		viper.SetConfigType("yaml")
 		viper.AddConfigPath(configdir.LocalConfig(progname))
 	}
+	// only CS_ variables count: without a prefix an unrelated DEBUG or STATS in
+	// the shell would switch options on. The replacer makes the nested keys
+	// reachable, e.g. CS_DEFAULTS_LIMIT for defaults.limit. NO_COLOR does not go
+	// through here; fatih/color reads it by itself.
+	viper.SetEnvPrefix("CS")
+	viper.SetEnvKeyReplacer(strings.NewReplacer(".", "_"))
 	viper.AutomaticEnv()
 
 	if err := viper.ReadInConfig(); err != nil {
@@ -206,8 +246,7 @@ func loadConfig() error {
 		return fmt.Errorf("invalid config file %s: %w", viper.ConfigFileUsed(), err)
 	}
 
-	resolveFlags()
-	return nil
+	return resolveFlags()
 }
 
 var listCmd = &cobra.Command{
@@ -243,12 +282,12 @@ func getSorter(method string) sorter {
 	switch method {
 	case "a-z":
 		return func(r codesearch.Results) codesearch.Results {
-			sort.Slice(r, func(i, j int) bool { return r[i].Path < r[j].Path })
+			sort.SliceStable(r, func(i, j int) bool { return r[i].Path < r[j].Path })
 			return r
 		}
 	case "z-a":
 		return func(r codesearch.Results) codesearch.Results {
-			sort.Slice(r, func(i, j int) bool { return r[i].Path > r[j].Path })
+			sort.SliceStable(r, func(i, j int) bool { return r[i].Path > r[j].Path })
 			return r
 		}
 	case "":
@@ -296,15 +335,27 @@ func splitHighlight(line string, h [2]int) (head, match, tail string) {
 // contextBlock renders the lines around a match, numbered relative to it.
 func contextBlock(res *codesearch.Result) (before, after string) {
 	for i, line := range res.Context.Before {
-		before += fmt.Sprintf("%d: %s\n", res.Lineno-(len(res.Context.Before)-i), line)
+		before += linePrefix(res, res.Lineno-(len(res.Context.Before)-i)) + line + "\n"
 	}
 	for i, line := range res.Context.After {
-		after += fmt.Sprintf("%d: %s\n", res.Lineno+i+1, line)
+		after += linePrefix(res, res.Lineno+i+1) + line + "\n"
 	}
 	if after != "" {
 		after = "\n" + after
 	}
 	return before, after
+}
+
+// linePrefix is the "N: " printed before line n of a result. A Lineno of 0
+// means the backend could not place the match in the file (GitHub falls back
+// to the search fragment when the file changed or is too large), so the lines
+// are printed bare: numbering them from 0 would show a 0 for the match and
+// negative numbers above it.
+func linePrefix(res *codesearch.Result, n int) string {
+	if res.Lineno == 0 {
+		return ""
+	}
+	return fmt.Sprintf("%d: ", n)
 }
 
 // printResult renders one result as formatted text. A file name search has no
@@ -323,12 +374,16 @@ func printResult(w io.Writer, res *codesearch.Result, filenamesOnly bool) {
 	}
 	before, after := contextBlock(res)
 	head, match, tail := splitHighlight(res.Line, res.Highlight)
+	var lineno string
+	if res.Lineno != 0 {
+		lineno = textBoldGreen.Sprint(res.Lineno) + ": "
+	}
 	fmt.Fprintf(
 		w,
-		"%s\n\n%s%s: %s%s\n\n",
+		"%s\n\n%s%s%s%s\n\n",
 		location,
 		before,
-		textBoldGreen.Sprint(res.Lineno),
+		lineno,
 		head+textBoldRed.Sprint(match)+tail,
 		after,
 	)
@@ -524,23 +579,70 @@ func selectResults(results codesearch.Results, limit uint, matchFilename *regexp
 // backend has already matched the pattern against the file names, so nothing
 // is re-tested here: a substring check would throw away every hit from a
 // pattern that is not a literal, which is exactly what csearch searches with.
-// The limit counts distinct file names, since that is what gets printed.
-func selectFilenames(results codesearch.Results, limit uint) []*codesearch.Result {
-	seen := make(map[string]struct{}, len(results))
+// A file is identified by its repository as well as its path, because a
+// csearch index with several roots holds paths that are only relative to
+// their root. sorted says the results are already in the order requested by
+// --sort; otherwise they are put in path order. The limit counts distinct file
+// names in the final order, since that is what gets printed.
+func selectFilenames(results codesearch.Results, limit uint, sorted bool) []*codesearch.Result {
+	type file struct{ repoURL, path string }
+	seen := make(map[file]struct{}, len(results))
 	var out []*codesearch.Result
 	for i := range results {
 		res := &results[i]
-		if _, ok := seen[res.Path]; ok {
+		key := file{res.RepoURL, res.Path}
+		if _, ok := seen[key]; ok {
 			continue
 		}
-		if limit > 0 && uint(len(out)) >= limit {
-			break
-		}
-		seen[res.Path] = struct{}{}
+		seen[key] = struct{}{}
 		out = append(out, res)
 	}
-	sort.Slice(out, func(i, j int) bool { return out[i].Path < out[j].Path })
+	if !sorted {
+		sort.SliceStable(out, func(i, j int) bool {
+			if out[i].Path != out[j].Path {
+				return out[i].Path < out[j].Path
+			}
+			return out[i].RepoURL < out[j].RepoURL
+		})
+	}
+	if limit > 0 && uint(len(out)) > limit {
+		out = out[:limit]
+	}
 	return out
+}
+
+// resolveBackendNames turns the requested backend names into keys of the
+// config. "all" selects every backend, sorted so that the output order is the
+// same on every run rather than following map iteration. Names are matched
+// without regard to case, and blanks and repeats are dropped so that
+// -b "a, b" works and -b a,a does not search twice.
+func resolveBackendNames(config *codesearch.Config, requested []string) ([]string, error) {
+	var names []string
+	seen := make(map[string]struct{}, len(requested))
+	for _, name := range requested {
+		name = strings.TrimSpace(name)
+		if name == "" {
+			continue
+		}
+		if strings.EqualFold(name, codesearch.AllBackends) {
+			names = make([]string, 0, len(config.Backends))
+			for key := range config.Backends {
+				names = append(names, key)
+			}
+			sort.Strings(names)
+			return names, nil
+		}
+		key, ok := config.LookupBackend(name)
+		if !ok {
+			return nil, fmt.Errorf("backend %q not found", name)
+		}
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		names = append(names, key)
+	}
+	return names, nil
 }
 
 var searchCmd = &cobra.Command{
@@ -557,21 +659,9 @@ var searchCmd = &cobra.Command{
 		if searchBackends != "" {
 			backendsToValidate = strings.Split(searchBackends, ",")
 		}
-		var backendNames []string
-		for _, b := range backendsToValidate {
-			// Config.Validate has already ensured that there is either "all" or
-			// individual backend names.
-			if b == "all" {
-				// clear out backendNames in case other backends were
-				// appended
-				backendNames = make([]string, 0, len(config.Backends))
-				for name := range config.Backends {
-					backendNames = append(backendNames, name)
-				}
-				break
-			} else {
-				backendNames = append(backendNames, b)
-			}
+		backendNames, err := resolveBackendNames(config, backendsToValidate)
+		if err != nil {
+			logrus.Fatal(err)
 		}
 		// get sorter to sort results later
 		sorter := getSorter(flagSort)
@@ -587,10 +677,7 @@ var searchCmd = &cobra.Command{
 		fmt.Fprintf(os.Stderr, "Searching %q on %q\n", searchString, backendNames)
 		backends := make([]codesearch.Backend, 0, len(backendNames))
 		for _, name := range backendNames {
-			backendConfig, ok := config.Backends[name]
-			if !ok {
-				logrus.Fatalf("Backend %q not found", name)
-			}
+			backendConfig := config.Backends[name]
 			backend := codesearch.BackendByType(backendConfig.Type)
 			if backend == nil {
 				logrus.Fatalf("Failed to get backend for type %q", backendConfig.Type)
@@ -635,7 +722,7 @@ var searchCmd = &cobra.Command{
 			// sort the results, if requested
 			results := sorter(o.results)
 			if flagSearchInFilenames {
-				o.selected = selectFilenames(results, flagLimit)
+				o.selected = selectFilenames(results, flagLimit, flagSort != "")
 			} else {
 				o.selected = selectResults(results, flagLimit, matchFilename)
 			}

@@ -292,6 +292,8 @@ func TestRemovePathPrefix(t *testing.T) {
 		{"/src/repo", "/src/repo", ""},
 		{"/other/main.go", "/src/repo", "/other/main.go"},
 		{"main.go", "", "main.go"},
+		{"/src/repo/main.go", "/", "src/repo/main.go"},
+		{"/", "/", ""},
 	} {
 		if got := removePathPrefix(tt.s, tt.prefix); got != tt.want {
 			t.Errorf("removePathPrefix(%q, %q) = %q, want %q", tt.s, tt.prefix, got, tt.want)
@@ -313,6 +315,10 @@ func TestHasPathPrefix(t *testing.T) {
 		{"/src/repository/main.go", "/src/repo", false},
 		{"/other/main.go", "/src/repo", false},
 		{"/src/repo/main.go", "", false},
+		// an index rooted at / contains every absolute path
+		{"/src/repo/main.go", "/", true},
+		{"/", "/", true},
+		{"main.go", "/", false},
 	} {
 		if got := hasPathPrefix(tt.s, tt.prefix); got != tt.want {
 			t.Errorf("hasPathPrefix(%q, %q) = %v, want %v", tt.s, tt.prefix, got, tt.want)
@@ -462,6 +468,23 @@ func TestCsearchMissingIndex(t *testing.T) {
 			setup:   func(t *testing.T) string { return t.TempDir() },
 			wantMsg: "not a codesearch index",
 		},
+		// index.Open checks the size and the trailer and calls log.Fatal
+		// when either is wrong, so these used to exit the test binary
+		{
+			name:    "header only",
+			setup:   csearchWriteIndexFile(indexMagic),
+			wantMsg: "truncated",
+		},
+		{
+			name:    "header and body without trailer",
+			setup:   csearchWriteIndexFile(indexMagic + strings.Repeat("\x00", 64)),
+			wantMsg: "truncated",
+		},
+		{
+			name:    "header and trailer only",
+			setup:   csearchWriteIndexFile(indexMagic + indexTrailer),
+			wantMsg: "truncated",
+		},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			path := tt.setup(t)
@@ -489,5 +512,101 @@ func TestCsearchValidIndexStillOpens(t *testing.T) {
 	}
 	if len(results) != 1 {
 		t.Errorf("got %d results, want 1", len(results))
+	}
+}
+
+func csearchWriteIndexFile(content string) func(t *testing.T) string {
+	return func(t *testing.T) string {
+		p := filepath.Join(t.TempDir(), "csearchindex")
+		if err := os.WriteFile(p, []byte(content), 0o644); err != nil {
+			t.Fatalf("failed to write: %v", err)
+		}
+		return p
+	}
+}
+
+// TestCsearchSkipsStaleFiles covers a file deleted after cindex ran: the index
+// is a snapshot, so this is the normal state, and it used to fail the whole
+// search with "match reader failed" instead of returning the other hits.
+func TestCsearchSkipsStaleFiles(t *testing.T) {
+	indexFile, root := newTestIndex(t, map[string]string{
+		"a.go": "needle\n",
+		"b.go": "needle\n",
+		"c.go": "needle\n",
+	})
+	if err := os.Remove(filepath.Join(root, "a.go")); err != nil {
+		t.Fatalf("failed to remove: %v", err)
+	}
+	for _, opts := range []SearchOptions{{}, {LinesBefore: 1, LinesAfter: 1}} {
+		results, err := newCsearchBackend(t, indexFile).Search(context.Background(), "needle", opts)
+		if err != nil {
+			t.Fatalf("opts %+v: search failed: %v", opts, err)
+		}
+		if got, want := resultPaths(results), []string{"b.go", "c.go"}; !equalLines(got, want) {
+			t.Errorf("opts %+v: got %q, want %q", opts, got, want)
+		}
+	}
+}
+
+// TestCsearchSearchInFilenamesHonoursCancellation covers the -F walk, which
+// never looked at the context, so neither --timeout nor Ctrl-C stopped it.
+func TestCsearchSearchInFilenamesHonoursCancellation(t *testing.T) {
+	indexFile, _ := newTestIndex(t, filenameTree)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	results, err := newCsearchBackend(t, indexFile).Search(ctx, "main.go", SearchOptions{SearchInFilenames: true})
+	if !errors.Is(err, context.Canceled) {
+		t.Errorf("got %d results and error %v, want context.Canceled", len(results), err)
+	}
+}
+
+// TestCsearchSearchInFilenamesIsOrdered covers -F results coming out of a map
+// in random order, which made --limit pick a different subset on every run.
+func TestCsearchSearchInFilenamesIsOrdered(t *testing.T) {
+	files := make(map[string]string, 50)
+	for i := 0; i < 50; i++ {
+		files[fmt.Sprintf("f%02d.go", i)] = "package main\n"
+	}
+	indexFile, _ := newTestIndex(t, files)
+
+	results, err := newCsearchBackend(t, indexFile).Search(context.Background(), `\.go$`, SearchOptions{SearchInFilenames: true})
+	if err != nil {
+		t.Fatalf("search failed: %v", err)
+	}
+	got := make([]string, 0, len(results))
+	for _, r := range results {
+		got = append(got, r.Path)
+	}
+	if want := resultPaths(results); !equalLines(got, want) {
+		t.Errorf("results are not in lexical order: %q", got)
+	}
+}
+
+// TestCsearchRootIndex covers an index whose root is "/": the root used to
+// match no path at all, so every search failed with "no indexed path found".
+func TestCsearchRootIndex(t *testing.T) {
+	dir := t.TempDir()
+	file := filepath.Join(dir, "a.go")
+	if err := os.WriteFile(file, []byte("needle\n"), 0o644); err != nil {
+		t.Fatalf("failed to write: %v", err)
+	}
+	// index a single file under a root of "/" rather than walk the whole
+	// file system
+	indexFile := filepath.Join(t.TempDir(), "csearchindex")
+	iw := index.Create(indexFile)
+	iw.AddPaths([]string{"/"})
+	iw.AddFile(file)
+	iw.Flush()
+
+	results, err := newCsearchBackend(t, indexFile).Search(context.Background(), "needle", SearchOptions{})
+	if err != nil {
+		t.Fatalf("search failed: %v", err)
+	}
+	if got, want := resultPaths(results), []string{strings.TrimPrefix(file, "/")}; !equalLines(got, want) {
+		t.Errorf("got %q, want %q", got, want)
+	}
+	if len(results) == 1 && results[0].RepoName != "/" {
+		t.Errorf("got repo %q, want \"/\"", results[0].RepoName)
 	}
 }

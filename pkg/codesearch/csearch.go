@@ -98,11 +98,13 @@ func contextLines(lines []string, lineno, before, after int) ([]string, []string
 // hasPathPrefix reports whether s is prefix or sits underneath it, comparing
 // whole path components so that "/src/repo" does not match "/src/repo2".
 func hasPathPrefix(s, prefix string) bool {
-	prefix = strings.TrimRight(prefix, "/")
-	if prefix == "" {
-		return false
+	trimmed := strings.TrimRight(prefix, "/")
+	if trimmed == "" {
+		// a root prefix trims to nothing, but it still contains every
+		// absolute path; an empty prefix contains nothing
+		return prefix != "" && strings.HasPrefix(s, "/")
 	}
-	return s == prefix || strings.HasPrefix(s, prefix+"/")
+	return s == trimmed || strings.HasPrefix(s, trimmed+"/")
 }
 
 func removePathPrefix(s, prefix string) string {
@@ -112,12 +114,22 @@ func removePathPrefix(s, prefix string) string {
 	return strings.TrimPrefix(strings.TrimPrefix(s, strings.TrimRight(prefix, "/")), "/")
 }
 
-// indexMagic is the header cindex writes at the start of an index file.
-const indexMagic = "csearch index 1\n"
+// indexMagic and indexTrailer are the header and trailer cindex writes at the
+// start and end of an index file. Five 4-byte section offsets sit right before
+// the trailer, so no real index is shorter than indexMinSize.
+const (
+	indexMagic   = "csearch index 1\n"
+	indexTrailer = "\ncsearch trailr\n"
+	indexMinSize = len(indexMagic) + 5*4 + len(indexTrailer)
+)
 
 // openIndex validates the index before handing it to index.Open, which calls
 // log.Fatal on anything it does not like and so would take the whole process
-// down with "corrupt index" even when the file is simply not there.
+// down with "corrupt index" even when the file is simply not there. Checking
+// the header, the size and the trailer catches missing, foreign and truncated
+// files. Deeper corruption (bad section offsets) can still reach log.Fatal in
+// the library; there is no way to recover from that short of re-parsing the
+// whole format here.
 func openIndex(path string) (*index.Index, error) {
 	f, err := os.Open(path)
 	if err != nil {
@@ -131,6 +143,17 @@ func openIndex(path string) (*index.Index, error) {
 	header := make([]byte, len(indexMagic))
 	if _, err := io.ReadFull(f, header); err != nil || string(header) != indexMagic {
 		return nil, fmt.Errorf("%q is not a codesearch index, recreate it with cindex", path)
+	}
+	info, err := f.Stat()
+	if err != nil {
+		return nil, fmt.Errorf("cannot stat index %q: %w", path, err)
+	}
+	if info.Size() < int64(indexMinSize) {
+		return nil, fmt.Errorf("index %q is truncated, recreate it with cindex", path)
+	}
+	trailer := make([]byte, len(indexTrailer))
+	if _, err := f.ReadAt(trailer, info.Size()-int64(len(indexTrailer))); err != nil || string(trailer) != indexTrailer {
+		return nil, fmt.Errorf("index %q is truncated, recreate it with cindex", path)
 	}
 	return index.Open(path), nil
 }
@@ -156,8 +179,14 @@ func (g *Csearch) Search(ctx context.Context, searchString string, opts SearchOp
 		}
 		var results Results
 		for _, indexedPath := range ix.Paths() {
-			files := make(map[string]struct{})
+			// results are appended as the walk visits them, which is lexical
+			// order, so that --limit picks the same subset on every run
 			err = filepath.Walk(indexedPath, func(path string, info os.FileInfo, err error) error {
+				// a big tree takes a long time to walk, and the walk is the
+				// only thing that can notice --timeout or Ctrl-C
+				if ctxErr := ctx.Err(); ctxErr != nil {
+					return ctxErr
+				}
 				// info is nil whenever err is set, which happens for
 				// directories that cannot be read. Skip them rather than
 				// aborting the whole walk.
@@ -169,19 +198,11 @@ func (g *Csearch) Search(ctx context.Context, searchString string, opts SearchOp
 					return nil
 				}
 				shortName := removePathPrefix(path, indexedPath)
-				if re.MatchString(shortName) {
-					logrus.Debugf("Adding file %s", path)
-					files[path] = struct{}{}
+				if !re.MatchString(shortName) {
+					return nil
 				}
-				return nil
-			})
-			if err != nil {
-				return nil, fmt.Errorf("failed to walk the source tree: %w", err)
-			}
-			for path := range files {
-				shortName := removePathPrefix(path, indexedPath)
 				logrus.Debugf("indexPath=%s path=%s shortName=%s", indexedPath, path, shortName)
-				result := Result{
+				results = append(results, Result{
 					Backend:    g.Name(),
 					Path:       shortName,
 					RepoURL:    "file://" + indexedPath,
@@ -189,8 +210,14 @@ func (g *Csearch) Search(ctx context.Context, searchString string, opts SearchOp
 					Owner:      "",
 					RepoName:   indexedPath,
 					IsFilename: true,
+				})
+				return nil
+			})
+			if err != nil {
+				if ctxErr := ctx.Err(); ctxErr != nil {
+					return nil, ctxErr
 				}
-				results = append(results, result)
+				return nil, fmt.Errorf("failed to walk the source tree: %w", err)
 			}
 		}
 		return results, nil
@@ -231,14 +258,42 @@ func (g *Csearch) toResult(ctx context.Context, pattern string, ix *index.Index,
 		b := grep.Stdout.(*bytes.Buffer)
 		o := b.String()
 		b.Reset()
+		eb := grep.Stderr.(*bytes.Buffer)
+		e := strings.TrimSpace(eb.String())
+		eb.Reset()
 		if o == "" {
-			e := grep.Stderr.(*bytes.Buffer).String()
 			if e != "" {
-				return nil, fmt.Errorf("match reader failed: %s", e)
+				// the index is a snapshot, so files that were deleted or
+				// made unreadable since cindex ran are the normal case and
+				// must not cost the hits from every other file
+				logrus.Warnf("Skipping %q: %s", name, e)
+				continue
 			}
 			// no output, no error, just continue
 			logrus.Debugf("Skipping empty file results")
 			continue
+		}
+		// find the indexed path this file sits under, preferring the
+		// longest match so nested indexed roots resolve to the deeper one
+		var indexedPath string
+		for _, p := range ix.Paths() {
+			if hasPathPrefix(name, p) && len(p) > len(indexedPath) {
+				indexedPath = p
+			}
+		}
+		if indexedPath == "" {
+			return nil, fmt.Errorf("no indexed path found for %q", name)
+		}
+		shortName := removePathPrefix(name, indexedPath)
+		// read the file once for all of its matches, not once per match
+		var fileLines []string
+		if opts.LinesBefore > 0 || opts.LinesAfter > 0 {
+			fullText, err := os.ReadFile(name)
+			if err != nil {
+				logrus.Warnf("Cannot read %q for context, showing the match alone: %v", name, err)
+			} else {
+				fileLines = strings.Split(string(fullText), "\n")
+			}
 		}
 		olines := strings.Split(o, "\n")
 		for _, oline := range olines {
@@ -260,25 +315,9 @@ func (g *Csearch) toResult(ctx context.Context, pattern string, ix *index.Index,
 			if newlineIdx != -1 {
 				line = line[:newlineIdx]
 			}
-			// find the indexed path this file sits under, preferring the
-			// longest match so nested indexed roots resolve to the deeper one
-			var indexedPath string
-			for _, p := range ix.Paths() {
-				if hasPathPrefix(name, p) && len(p) > len(indexedPath) {
-					indexedPath = p
-				}
-			}
-			if indexedPath == "" {
-				return nil, fmt.Errorf("no indexed path found for %q", name)
-			}
 			var before, after []string
-			if opts.LinesBefore > 0 || opts.LinesAfter > 0 {
-				fullText, err := os.ReadFile(name)
-				if err != nil {
-					return nil, fmt.Errorf("failed to read file %q: %w", name, err)
-				}
-				lines := strings.Split(string(fullText), "\n")
-				before, after = contextLines(lines, lineno, opts.LinesBefore, opts.LinesAfter)
+			if fileLines != nil {
+				before, after = contextLines(fileLines, lineno, opts.LinesBefore, opts.LinesAfter)
 			}
 			// find start and end offsets for highlight
 			offsets := re.FindAllStringIndex(line, -1)
@@ -288,7 +327,6 @@ func (g *Csearch) toResult(ctx context.Context, pattern string, ix *index.Index,
 			if len(offsets) > 0 {
 				start, end = offsets[0][0], offsets[0][1]
 			}
-			shortName := removePathPrefix(name, indexedPath)
 			result := Result{
 				Backend:   g.Name(),
 				Path:      shortName,
@@ -301,8 +339,6 @@ func (g *Csearch) toResult(ctx context.Context, pattern string, ix *index.Index,
 				Lineno:    lineno,
 				Line:      line,
 				Highlight: [2]int{start, end},
-				// TODO: IsFilename
-				//IsFilename: true/false
 			}
 			results = append(results, result)
 		}

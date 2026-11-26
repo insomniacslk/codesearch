@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -17,6 +18,7 @@ import (
 	"github.com/fatih/color"
 	"github.com/insomniacslk/codesearch/pkg/codesearch"
 	"github.com/kirsle/configdir"
+	"github.com/sirupsen/logrus"
 	"github.com/spf13/viper"
 )
 
@@ -317,7 +319,7 @@ func TestSelectFilenames(t *testing.T) {
 	}
 	t.Run("deduplicates and sorts", func(t *testing.T) {
 		var got []string
-		for _, r := range selectFilenames(results, 0) {
+		for _, r := range selectFilenames(results, 0, false) {
 			got = append(got, r.Path)
 		}
 		if want := []string{"cmd/main.go", "pkg/main.go"}; !equalStrings(got, want) {
@@ -325,7 +327,7 @@ func TestSelectFilenames(t *testing.T) {
 		}
 	})
 	t.Run("limit counts unique names", func(t *testing.T) {
-		got := selectFilenames(results, 1)
+		got := selectFilenames(results, 1, false)
 		if len(got) != 1 {
 			t.Fatalf("got %d results, want 1", len(got))
 		}
@@ -337,7 +339,7 @@ func TestSelectFilenames(t *testing.T) {
 		dupes := codesearch.Results{
 			{Path: "same.go"}, {Path: "same.go"}, {Path: "same.go"}, {Path: "other.go"},
 		}
-		got := selectFilenames(dupes, 2)
+		got := selectFilenames(dupes, 2, false)
 		if len(got) != 2 {
 			t.Fatalf("got %d results, want 2", len(got))
 		}
@@ -354,7 +356,7 @@ func TestSelectFilenamesKeepsNonLiteralMatches(t *testing.T) {
 		{Path: "cmd/cs/main.go", IsFilename: true},
 		{Path: "pkg/codesearch/github.go", IsFilename: true},
 	}
-	got := selectFilenames(results, 0)
+	got := selectFilenames(results, 0, false)
 	if len(got) != len(results) {
 		t.Fatalf("got %d results, want %d", len(got), len(results))
 	}
@@ -850,6 +852,48 @@ func TestContextBlockNumbering(t *testing.T) {
 	}
 }
 
+// TestContextBlockUnknownLineno covers a result whose line in the file is not
+// known: numbering from 0 would show the lines above the match as negative.
+func TestContextBlockUnknownLineno(t *testing.T) {
+	res := &codesearch.Result{
+		Context: codesearch.ResultContext{
+			Before: []string{"one", "two"},
+			After:  []string{"four"},
+		},
+	}
+	before, after := contextBlock(res)
+	if want := "one\ntwo\n"; before != want {
+		t.Errorf("before:\ngot  %q\nwant %q", before, want)
+	}
+	if want := "\nfour\n"; after != want {
+		t.Errorf("after:\ngot  %q\nwant %q", after, want)
+	}
+}
+
+func TestPrintResultUnknownLineno(t *testing.T) {
+	old := color.NoColor
+	color.NoColor = true
+	defer func() { color.NoColor = old }()
+
+	for _, tt := range []struct {
+		lineno int
+		want   string
+	}{
+		{0, "gh:o/r:f.go (main)\n\nabove\nthe needle\nbelow\n\n\n"},
+		{5, "gh:o/r:f.go (main)\n\n4: above\n5: the needle\n6: below\n\n\n"},
+	} {
+		var buf bytes.Buffer
+		printResult(&buf, &codesearch.Result{
+			Backend: "gh", Owner: "o", RepoName: "r", Path: "f.go", Branch: "main",
+			Line: "the needle", Lineno: tt.lineno, Highlight: [2]int{4, 10},
+			Context: codesearch.ResultContext{Before: []string{"above"}, After: []string{"below"}},
+		}, false)
+		if got := buf.String(); got != tt.want {
+			t.Errorf("lineno %d:\ngot  %q\nwant %q", tt.lineno, got, tt.want)
+		}
+	}
+}
+
 func TestContextBlockEmpty(t *testing.T) {
 	before, after := contextBlock(&codesearch.Result{Lineno: 3})
 	if before != "" || after != "" {
@@ -1158,5 +1202,300 @@ func TestLimitedSearchStillHonoursThePrintedLimit(t *testing.T) {
 	}
 	if got := selectResults(results, 2, nil); len(got) != 2 {
 		t.Errorf("got %d results, want 2", len(got))
+	}
+}
+
+// TestMixedCaseBackendNames covers backend names with upper case letters.
+// Viper lowercases every map key, so the name under `backends` no longer
+// matched the same name written in default_backends or passed to -b.
+func TestMixedCaseBackendNames(t *testing.T) {
+	resetConfigState(t)
+	configFile = writeConfig(t, `
+default_backends: [GitHub_Me]
+backends:
+  GitHub_Me:
+    type: csearch
+    params:
+      index_file: /tmp/index
+`)
+	if err := loadConfig(); err != nil {
+		t.Fatalf("failed to load config: %v", err)
+	}
+	for _, requested := range []string{"GitHub_Me", "github_me", "GITHUB_ME"} {
+		names, err := resolveBackendNames(getConfig(), []string{requested})
+		if err != nil {
+			t.Errorf("%q: got error %v, want nil", requested, err)
+			continue
+		}
+		if len(names) != 1 {
+			t.Errorf("%q: got %q, want one backend", requested, names)
+			continue
+		}
+		if _, ok := getConfig().Backends[names[0]]; !ok {
+			t.Errorf("%q: resolved to %q, which is not a key of the config", requested, names[0])
+		}
+	}
+}
+
+func backendsConfig(names ...string) *codesearch.Config {
+	cfg := &codesearch.Config{Backends: map[string]codesearch.BackendConfig{}}
+	for _, n := range names {
+		cfg.Backends[n] = codesearch.BackendConfig{Type: codesearch.BackendTypeCsearch}
+	}
+	return cfg
+}
+
+// TestResolveBackendNames covers "all" expanding in map iteration order, which
+// changed the order of the output from one run to the next, and -b values that
+// carried spaces or repeated a backend.
+func TestResolveBackendNames(t *testing.T) {
+	cfg := backendsConfig("delta", "alpha", "charlie", "bravo", "echo", "foxtrot", "golf", "hotel")
+	all := []string{"alpha", "bravo", "charlie", "delta", "echo", "foxtrot", "golf", "hotel"}
+	for _, tt := range []struct {
+		name      string
+		requested []string
+		want      []string
+	}{
+		{"all is sorted", []string{"all"}, all},
+		{"all wins over other names", []string{"echo", "all"}, all},
+		{"all is case-insensitive", []string{"ALL"}, all},
+		{"explicit order is kept", []string{"echo", "alpha"}, []string{"echo", "alpha"}},
+		{"whitespace is trimmed", []string{" echo", "alpha "}, []string{"echo", "alpha"}},
+		{"empty entries are dropped", []string{"echo", "", " ", "alpha"}, []string{"echo", "alpha"}},
+		{"duplicates keep the first", []string{"echo", "alpha", "echo"}, []string{"echo", "alpha"}},
+		{"duplicates differing in case", []string{"echo", "ECHO"}, []string{"echo"}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			// map iteration order varies, so one lucky run proves nothing
+			for i := 0; i < 20; i++ {
+				got, err := resolveBackendNames(cfg, tt.requested)
+				if err != nil {
+					t.Fatalf("got error %v, want nil", err)
+				}
+				if !equalStrings(got, tt.want) {
+					t.Fatalf("got %q, want %q", got, tt.want)
+				}
+			}
+		})
+	}
+}
+
+func TestResolveBackendNamesUnknown(t *testing.T) {
+	_, err := resolveBackendNames(backendsConfig("alpha"), []string{"alpha", "nope"})
+	if err == nil {
+		t.Fatal("got nil error, want a failure for an unknown backend")
+	}
+	if !strings.Contains(err.Error(), `"nope"`) {
+		t.Errorf("error %q does not name the backend", err)
+	}
+}
+
+// TestSelectFilenamesAcrossRoots covers the regression where -F deduplicated on
+// the path alone: a csearch index with two roots that both hold README.md
+// printed only one of them.
+func TestSelectFilenamesAcrossRoots(t *testing.T) {
+	results := codesearch.Results{
+		{Path: "README.md", RepoURL: "file:///b"},
+		{Path: "README.md", RepoURL: "file:///a"},
+		{Path: "README.md", RepoURL: "file:///b"},
+	}
+	got := selectFilenames(results, 0, false)
+	if len(got) != 2 {
+		t.Fatalf("got %d results, want 2", len(got))
+	}
+	// same path, so the repository breaks the tie
+	if got[0].RepoURL != "file:///a" || got[1].RepoURL != "file:///b" {
+		t.Errorf("got %q then %q, want file:///a then file:///b", got[0].RepoURL, got[1].RepoURL)
+	}
+}
+
+// TestSelectFilenamesOrderAndLimit covers -F ignoring --sort z-a, and the limit
+// being applied before the sort, which kept an arbitrary subset rather than
+// the first names in the printed order.
+func TestSelectFilenamesOrderAndLimit(t *testing.T) {
+	results := codesearch.Results{
+		{Path: "c.go"}, {Path: "a.go"}, {Path: "d.go"}, {Path: "b.go"},
+	}
+	paths := func(rs []*codesearch.Result) []string {
+		var out []string
+		for _, r := range rs {
+			out = append(out, r.Path)
+		}
+		return out
+	}
+	t.Run("limit applies after the default order", func(t *testing.T) {
+		got := paths(selectFilenames(append(codesearch.Results{}, results...), 2, false))
+		if want := []string{"a.go", "b.go"}; !equalStrings(got, want) {
+			t.Errorf("got %q, want %q", got, want)
+		}
+	})
+	t.Run("sort z-a is kept", func(t *testing.T) {
+		sorted := getSorter("z-a")(append(codesearch.Results{}, results...))
+		got := paths(selectFilenames(sorted, 0, true))
+		if want := []string{"d.go", "c.go", "b.go", "a.go"}; !equalStrings(got, want) {
+			t.Errorf("got %q, want %q", got, want)
+		}
+	})
+	t.Run("sort z-a with a limit", func(t *testing.T) {
+		sorted := getSorter("z-a")(append(codesearch.Results{}, results...))
+		got := paths(selectFilenames(sorted, 2, true))
+		if want := []string{"d.go", "c.go"}; !equalStrings(got, want) {
+			t.Errorf("got %q, want %q", got, want)
+		}
+	})
+}
+
+// TestNegativeValuesRejected covers negative context and limit values. The
+// context values reached the backends, and a negative limit wrapped round to a
+// huge unsigned number. A value that is not a number at all used to become 0
+// without a word.
+func TestNegativeValuesRejected(t *testing.T) {
+	for _, tt := range []struct {
+		name   string
+		config string
+		want   string
+	}{
+		{"defaults.before", "defaults:\n  before: -1\n", "defaults.before"},
+		{"defaults.after", "defaults:\n  after: -1\n", "defaults.after"},
+		{"defaults.context", "defaults:\n  context: -1\n", "defaults.context"},
+		{"defaults.limit", "defaults:\n  limit: -1\n", "defaults.limit"},
+		{"not a number", "defaults:\n  before: abc\n", "defaults.before"},
+		{"too large", "defaults:\n  after: 4294967296\n", "defaults.after"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			resetConfigState(t)
+			configFile = writeConfig(t, testConfig+tt.config)
+			err := loadConfig()
+			if err == nil {
+				t.Fatalf("got nil error, want a failure (limit=%d before=%d after=%d)",
+					flagLimit, flagSearchContextBefore, flagSearchContextAfter)
+			}
+			if !strings.Contains(err.Error(), tt.want) {
+				t.Errorf("error %q does not name %s", err, tt.want)
+			}
+		})
+	}
+}
+
+// TestNegativeFlagsRejectedByPflag checks that the command line never gets as
+// far as the config: the flags are unsigned, so parsing refuses the value.
+func TestNegativeFlagsRejectedByPflag(t *testing.T) {
+	for _, name := range []string{"before", "after", "context", "limit"} {
+		t.Run(name, func(t *testing.T) {
+			f := searchCmd.PersistentFlags().Lookup(name)
+			if f == nil {
+				t.Fatalf("no such flag: %q", name)
+			}
+			if err := f.Value.Set("-1"); err == nil {
+				_ = f.Value.Set(f.DefValue)
+				t.Errorf("--%s accepted -1", name)
+			}
+		})
+	}
+}
+
+// TestEnvironmentVariables covers AutomaticEnv without a prefix: an unrelated
+// DEBUG or STATS in the shell switched cs options on, while the nested keys
+// could not be reached from the environment at all.
+func TestEnvironmentVariables(t *testing.T) {
+	level := logrus.GetLevel()
+	t.Cleanup(func() { logrus.SetLevel(level) })
+
+	t.Run("bare names are ignored", func(t *testing.T) {
+		resetConfigState(t)
+		t.Setenv("DEBUG", "1")
+		t.Setenv("STATS", "1")
+		t.Setenv("DEFAULTS_LIMIT", "3")
+		configFile = writeConfig(t, testConfig)
+		if err := loadConfig(); err != nil {
+			t.Fatalf("failed to load config: %v", err)
+		}
+		if flagDebug || flagStats || flagLimit != 0 {
+			t.Errorf("got debug=%v stats=%v limit=%d, want them untouched", flagDebug, flagStats, flagLimit)
+		}
+	})
+	t.Run("CS_ names apply", func(t *testing.T) {
+		resetConfigState(t)
+		t.Setenv("CS_DEBUG", "1")
+		t.Setenv("CS_STATS", "true")
+		t.Setenv("CS_DEFAULTS_LIMIT", "7")
+		t.Setenv("CS_DEFAULTS_SORT", "z-a")
+		configFile = writeConfig(t, testConfig)
+		if err := loadConfig(); err != nil {
+			t.Fatalf("failed to load config: %v", err)
+		}
+		if !flagDebug || !flagStats || flagLimit != 7 || flagSort != "z-a" {
+			t.Errorf("got debug=%v stats=%v limit=%d sort=%q, want true true 7 z-a",
+				flagDebug, flagStats, flagLimit, flagSort)
+		}
+	})
+	t.Run("environment overrides the config file", func(t *testing.T) {
+		resetConfigState(t)
+		t.Setenv("CS_DEFAULTS_LIMIT", "7")
+		configFile = writeConfig(t, testConfig+"defaults:\n  limit: 5\n")
+		if err := loadConfig(); err != nil {
+			t.Fatalf("failed to load config: %v", err)
+		}
+		if flagLimit != 7 {
+			t.Errorf("got limit %d, want 7", flagLimit)
+		}
+	})
+	t.Run("command line overrides the environment", func(t *testing.T) {
+		resetConfigState(t)
+		t.Setenv("CS_DEFAULTS_LIMIT", "7")
+		configFile = writeConfig(t, testConfig+"defaults:\n  limit: 5\n")
+		setFlag(t, "limit", "10")
+		if err := loadConfig(); err != nil {
+			t.Fatalf("failed to load config: %v", err)
+		}
+		if flagLimit != 10 {
+			t.Errorf("got limit %d, want 10", flagLimit)
+		}
+	})
+	t.Run("a negative value from the environment is rejected", func(t *testing.T) {
+		resetConfigState(t)
+		t.Setenv("CS_DEFAULTS_LIMIT", "-1")
+		configFile = writeConfig(t, testConfig)
+		if err := loadConfig(); err == nil {
+			t.Errorf("got nil error, want a failure (limit=%d)", flagLimit)
+		}
+	})
+}
+
+// TestNoColorEnvironment checks that NO_COLOR still disables colours once
+// viper no longer maps it to no_color. fatih/color reads it only while the
+// package initialises, so the check needs a fresh process.
+func TestNoColorEnvironment(t *testing.T) {
+	if os.Getenv("CS_TEST_NO_COLOR_CHILD") == "1" {
+		// stdout is not a terminal under go test, which already turns colours
+		// off; undo that so only NO_COLOR is left to do it
+		color.NoColor = false
+		resetConfigState(t)
+		configFile = writeConfig(t, testConfig)
+		if err := loadConfig(); err != nil {
+			t.Fatalf("failed to load config: %v", err)
+		}
+		fmt.Printf("bold=%q red=%q\n", textBold.Sprint("x"), textBoldRed.Sprint("x"))
+		return
+	}
+	for _, tt := range []struct {
+		noColor   string
+		wantPlain bool
+	}{
+		{"1", true},
+		{"", false},
+	} {
+		t.Run(fmt.Sprintf("NO_COLOR=%q", tt.noColor), func(t *testing.T) {
+			cmd := exec.Command(os.Args[0], "-test.run=^TestNoColorEnvironment$", "-test.v")
+			cmd.Env = append(os.Environ(), "CS_TEST_NO_COLOR_CHILD=1", "NO_COLOR="+tt.noColor)
+			out, err := cmd.CombinedOutput()
+			if err != nil {
+				t.Fatalf("child failed: %v\n%s", err, out)
+			}
+			plain := strings.Contains(string(out), `bold="x" red="x"`)
+			if plain != tt.wantPlain {
+				t.Errorf("got plain=%v, want %v; output:\n%s", plain, tt.wantPlain, out)
+			}
+		})
 	}
 }
