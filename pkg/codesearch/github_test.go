@@ -805,3 +805,28 @@ func TestGithubPathMatchIsSkipped(t *testing.T) {
 		t.Errorf("got %d content fetches, want 1", got)
 	}
 }
+
+// TestGithubInvalidIndices is the regression test for indices that were used
+// to slice the file content unchecked.
+func TestGithubInvalidIndices(t *testing.T) {
+	for _, indices := range []string{"[-1,3]", "[5,2]", "[0,1000]", "[1000,1001]"} {
+		t.Run(indices, func(t *testing.T) {
+			item := githubItem("src/f.go",
+				`{"property":"content","fragment":"needle","matches":[{"indices":`+indices+`},{"indices":[0,6]}]}`)
+			srv := githubServer(t, item, fileContents(base64File("needle\n")))
+			defer srv.Close()
+
+			results, err := newGithubBackend(t, srv.URL).Search(context.Background(), "needle", SearchOptions{})
+			if err != nil {
+				t.Fatalf("search failed: %v", err)
+			}
+			// the bad match is dropped, the good one kept
+			if len(results) != 1 {
+				t.Fatalf("got %d results, want 1", len(results))
+			}
+			if got, want := results[0].Highlight, [2]int{0, 6}; got != want {
+				t.Errorf("highlight: got %v, want %v", got, want)
+			}
+		})
+	}
+}

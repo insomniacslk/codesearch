@@ -222,6 +222,23 @@ func (g *Github) fileContent(ctx context.Context, client *github.Client, cache m
 	return text, nil
 }
 
+// githubMatchIndices returns the highlight of match relative to fragment, or
+// false if the indices are missing or do not describe a range inside the
+// fragment. They come from the API and are used to slice, so they cannot be
+// trusted.
+func githubMatchIndices(match *github.Match, fragment string) (int, int, bool) {
+	// indices is documented as a start/end pair but is omitted entirely for
+	// some match kinds
+	if match == nil || len(match.Indices) < 2 {
+		return 0, 0, false
+	}
+	i0, i1 := match.Indices[0], match.Indices[1]
+	if i0 < 0 || i0 > i1 || i1 > len(fragment) {
+		return 0, 0, false
+	}
+	return i0, i1, true
+}
+
 func (g *Github) toResult(ctx context.Context, client *github.Client, csresults []*github.CodeResult, opts SearchOptions) (Results, error) {
 	var results Results
 	contents := make(map[string]string)
@@ -268,15 +285,14 @@ func (g *Github) toResult(ctx context.Context, client *github.Client, csresults 
 			lines := strings.Split(fullText, "\n")
 			logrus.Debugf("        Matches:\n")
 			for _, match := range tm.Matches {
-				// indices is documented as a start/end pair but is omitted
-				// entirely for some match kinds
-				if match == nil || len(match.Indices) < 2 {
-					logrus.Debugf("Skipping match with no indices")
+				i0, i1, ok := githubMatchIndices(match, tm.GetFragment())
+				if !ok {
+					logrus.Debugf("Skipping match with missing or invalid indices")
 					continue
 				}
 				// start of the highlight, relative to the full file content
-				start := fragmentStart + match.Indices[0]
-				length := match.Indices[1] - match.Indices[0]
+				start := fragmentStart + i0
+				length := i1 - i0
 				lineno := strings.Count((fullText)[:start], "\n") + 1
 				// start of the highlight, relative to the line rather than to
 				// the full text
