@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
-	"log"
 	"math"
 	"os"
 	"os/signal"
@@ -253,16 +252,20 @@ var listCmd = &cobra.Command{
 	Use:               "list",
 	Short:             "List the available backends",
 	PersistentPreRunE: requireConfig,
-	Run: func(cmd *cobra.Command, args []string) {
+	RunE: func(cmd *cobra.Command, args []string) error {
 		config := getConfig()
 		backendNames := make([]string, 0, len(config.Backends))
 		for name := range config.Backends {
 			backendNames = append(backendNames, name)
 		}
 		sort.Strings(backendNames)
+		w := cmd.OutOrStdout()
 		for idx, name := range backendNames {
-			fmt.Printf("%d) %s (type=%q)\n", idx+1, name, config.Backends[name].Type)
+			if _, err := fmt.Fprintf(w, "%d) %s (type=%q)\n", idx+1, name, config.Backends[name].Type); err != nil {
+				return err
+			}
 		}
+		return nil
 	},
 }
 
@@ -650,111 +653,132 @@ var searchCmd = &cobra.Command{
 	Short:             "Search code in the specified backends",
 	Args:              cobra.MinimumNArgs(1),
 	PersistentPreRunE: requireConfig,
-	Run: func(cmd *cobra.Command, args []string) {
-		config := getConfig()
-
-		// get backends. Command line overrides config file, and "all" expands
-		// to all known backends in the config file.
-		var backendsToValidate = config.DefaultBackends
-		if searchBackends != "" {
-			backendsToValidate = strings.Split(searchBackends, ",")
-		}
-		backendNames, err := resolveBackendNames(config, backendsToValidate)
-		if err != nil {
-			logrus.Fatal(err)
-		}
-		// get sorter to sort results later
-		sorter := getSorter(flagSort)
-		if sorter == nil {
-			log.Fatalf("Invalid value for --sort")
-		}
-		matchFilename, err := compileFilenamePattern(flagMatchFilename)
-		if err != nil {
-			logrus.Fatal(err)
-		}
-
-		searchString := strings.Join(args, " ")
-		fmt.Fprintf(os.Stderr, "Searching %q on %q\n", searchString, backendNames)
-		backends := make([]codesearch.Backend, 0, len(backendNames))
-		for _, name := range backendNames {
-			backend, err := codesearch.NewBackend(name, config.Backends[name])
-			if err != nil {
-				logrus.Fatal(err)
-			}
-			backends = append(backends, backend)
-		}
-		if len(backends) == 0 {
-			logrus.Fatal("No backends specified")
-		}
-		if err := checkCapabilities(backends, requestedCapabilities()); err != nil {
-			// printed rather than logged so the per-backend list stays readable
-			fmt.Fprintf(os.Stderr, "Requested options are not supported:\n%v\n", err)
-			os.Exit(1)
-		}
+	RunE: func(cmd *cobra.Command, args []string) error {
 		// a cancelled run must abandon in-flight requests rather than wait
 		// for them, so Ctrl-C is honoured mid-search
-		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+		ctx, stop := signal.NotifyContext(cmd.Context(), os.Interrupt, syscall.SIGTERM)
 		defer stop()
 
-		searchStart := time.Now()
-		outcomes := runSearches(ctx, backends, searchString, codesearch.SearchOptions{
-			LinesBefore:       flagSearchContextBefore,
-			LinesAfter:        flagSearchContextAfter,
-			CaseInsensitive:   flagCaseInsensitive,
-			SearchInFilenames: flagSearchInFilenames,
-			Timeout:           flagTimeout,
-			Limit:             backendLimit(),
-		})
-		totalResults := 0
-		for i := range outcomes {
-			o := &outcomes[i]
+		err := runSearch(ctx, getConfig(), args, cmd.OutOrStdout(), cmd.ErrOrStderr())
+		if errors.Is(err, errReported) {
+			// the summary is on stderr already; cobra's "Error:" line
+			// would only repeat it
+			cmd.SilenceErrors = true
+		}
+		return err
+	},
+}
+
+// errReported marks a failure that runSearch has already described on stderr
+// in a form cobra's one-line "Error:" cannot match. It still has to reach
+// main, which turns it into the exit status.
+var errReported = errors.New("failure already reported")
+
+// runSearch runs one search across the selected backends. It prints the
+// results to stdout and the progress, stats and failures to stderr. Results
+// from the backends that worked are printed even when others fail, and the
+// failure is then returned so that the exit status reflects it.
+func runSearch(ctx context.Context, config *codesearch.Config, args []string, stdout, stderr io.Writer) error {
+	// get backends. Command line overrides config file, and "all" expands
+	// to all known backends in the config file.
+	var backendsToValidate = config.DefaultBackends
+	if searchBackends != "" {
+		backendsToValidate = strings.Split(searchBackends, ",")
+	}
+	backendNames, err := resolveBackendNames(config, backendsToValidate)
+	if err != nil {
+		return err
+	}
+	// get sorter to sort results later
+	sorter := getSorter(flagSort)
+	if sorter == nil {
+		// the wording predates this function and users may match on it
+		return errors.New("Invalid value for --sort") //nolint:staticcheck // ST1005
+
+	}
+	matchFilename, err := compileFilenamePattern(flagMatchFilename)
+	if err != nil {
+		return err
+	}
+
+	searchString := strings.Join(args, " ")
+	_, _ = fmt.Fprintf(stderr, "Searching %q on %q\n", searchString, backendNames)
+	backends := make([]codesearch.Backend, 0, len(backendNames))
+	for _, name := range backendNames {
+		backend, err := codesearch.NewBackend(name, config.Backends[name])
+		if err != nil {
+			return err
+		}
+		backends = append(backends, backend)
+	}
+	if len(backends) == 0 {
+		return errors.New("no backends specified")
+	}
+	if err := checkCapabilities(backends, requestedCapabilities()); err != nil {
+		// printed rather than returned so the per-backend list stays readable
+		_, _ = fmt.Fprintf(stderr, "Requested options are not supported:\n%v\n", err)
+		return errReported
+	}
+
+	searchStart := time.Now()
+	outcomes := runSearches(ctx, backends, searchString, codesearch.SearchOptions{
+		LinesBefore:       flagSearchContextBefore,
+		LinesAfter:        flagSearchContextAfter,
+		CaseInsensitive:   flagCaseInsensitive,
+		SearchInFilenames: flagSearchInFilenames,
+		Timeout:           flagTimeout,
+		Limit:             backendLimit(),
+	})
+	totalResults := 0
+	for i := range outcomes {
+		o := &outcomes[i]
+		if o.err != nil {
+			continue
+		}
+		// sort the results, if requested
+		results := sorter(o.results)
+		if flagSearchInFilenames {
+			o.selected = selectFilenames(results, flagLimit, flagSort != "")
+		} else {
+			o.selected = selectResults(results, flagLimit, matchFilename)
+		}
+		totalResults += len(o.selected)
+	}
+	totalTime := time.Since(searchStart)
+
+	if flagJSON {
+		if err := writeJSON(stdout, outcomes, totalResults, totalTime); err != nil {
+			return fmt.Errorf("failed to write JSON output: %w", err)
+		}
+	} else {
+		for _, o := range outcomes {
+			for _, res := range o.selected {
+				printResult(stdout, res, flagSearchInFilenames)
+			}
+		}
+	}
+	if flagStats {
+		for _, o := range outcomes {
 			if o.err != nil {
+				_, _ = fmt.Fprintf(stderr, "Failed on %q after %s\n", o.backend.Name(), o.duration)
 				continue
 			}
-			// sort the results, if requested
-			results := sorter(o.results)
-			if flagSearchInFilenames {
-				o.selected = selectFilenames(results, flagLimit, flagSort != "")
-			} else {
-				o.selected = selectResults(results, flagLimit, matchFilename)
-			}
-			totalResults += len(o.selected)
+			_, _ = fmt.Fprintf(stderr, "Got %d results on %q in %s\n", len(o.selected), o.backend.Name(), o.duration)
 		}
-		totalTime := time.Since(searchStart)
+	}
+	_, _ = fmt.Fprintf(stderr, "Got %d total results in %s\n", totalResults, totalTime)
 
-		if flagJSON {
-			if err := writeJSON(os.Stdout, outcomes, totalResults, totalTime); err != nil {
-				logrus.Fatalf("Failed to write JSON output: %v", err)
-			}
-		} else {
-			for _, o := range outcomes {
-				for _, res := range o.selected {
-					printResult(os.Stdout, res, flagSearchInFilenames)
-				}
-			}
+	// Results from the backends that did work are already printed, so a
+	// failure elsewhere is reported at the end and reflected in the exit
+	// status rather than discarding everything.
+	if failed := failedSearches(outcomes); len(failed) > 0 {
+		_, _ = fmt.Fprintf(stderr, "\n%d of %d backends failed:\n", len(failed), len(outcomes))
+		for _, o := range failed {
+			_, _ = fmt.Fprintf(stderr, "  %s: %v\n", o.backend.Name(), o.err)
 		}
-		if flagStats {
-			for _, o := range outcomes {
-				if o.err != nil {
-					fmt.Fprintf(os.Stderr, "Failed on %q after %s\n", o.backend.Name(), o.duration)
-					continue
-				}
-				fmt.Fprintf(os.Stderr, "Got %d results on %q in %s\n", len(o.selected), o.backend.Name(), o.duration)
-			}
-		}
-		fmt.Fprintf(os.Stderr, "Got %d total results in %s\n", totalResults, totalTime)
-
-		// Results from the backends that did work are already printed, so a
-		// failure elsewhere is reported at the end and reflected in the exit
-		// status rather than discarding everything.
-		if failed := failedSearches(outcomes); len(failed) > 0 {
-			fmt.Fprintf(os.Stderr, "\n%d of %d backends failed:\n", len(failed), len(outcomes))
-			for _, o := range failed {
-				fmt.Fprintf(os.Stderr, "  %s: %v\n", o.backend.Name(), o.err)
-			}
-			os.Exit(1)
-		}
-	},
+		return fmt.Errorf("%d of %d backends failed: %w", len(failed), len(outcomes), errReported)
+	}
+	return nil
 }
 
 // toAnsiURL wraps text in an OSC 8 terminal hyperlink. The escapes are
@@ -778,7 +802,7 @@ var rootCmd = &cobra.Command{
 
 func main() {
 	if err := rootCmd.Execute(); err != nil {
-		// cobra has already printed the message
+		// cobra, or runSearch for errReported, has already printed the message
 		os.Exit(1)
 	}
 }
