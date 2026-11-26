@@ -275,3 +275,65 @@ func TestGitlabNegativeContext(t *testing.T) {
 		}
 	}
 }
+
+// TestGitlabMatchClassification is the regression test for multi-term
+// queries: GitLab tokenises the query, so a blob can match without containing
+// the whole string, and reporting it as a file name match made the CLI drop it.
+func TestGitlabMatchClassification(t *testing.T) {
+	for _, tt := range []struct {
+		name, query, data, path string
+		startline               int
+		wantFilename            bool
+		wantLine                string
+		wantLineno              int
+		wantHighlight           [2]int
+	}{
+		{
+			name: "whole string", query: "Bar()", data: "func foo() {\n  bar()\n}\n", path: "f.go", startline: 10,
+			wantLine: "  bar()", wantLineno: 11, wantHighlight: [2]int{2, 7},
+		},
+		{
+			name: "terms", query: "bar foo", data: "func foo() {\n  bar()\n}\n", path: "f.go", startline: 10,
+			wantLine: "func foo() {", wantLineno: 10, wantHighlight: [2]int{5, 8},
+		},
+		{
+			name: "file name", query: "nothere Main", data: "package x\n", path: "cmd/main.go", startline: 1,
+			wantFilename: true,
+		},
+		{
+			name: "advanced syntax", query: "foo* -bar", data: "func food() {}\n", path: "f.go", startline: 3,
+			wantLine: "func food() {}", wantLineno: 3,
+		},
+		{
+			name: "empty data", query: "needle", data: "", path: "f.go", startline: 1,
+			wantFilename: true,
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			res := gitlabBlobSearch(t, tt.query, tt.data, tt.path, tt.startline, SearchOptions{})[0]
+			if res.IsFilename != tt.wantFilename {
+				t.Fatalf("got IsFilename %v, want %v", res.IsFilename, tt.wantFilename)
+			}
+			if tt.wantFilename {
+				return
+			}
+			if res.Line != tt.wantLine || res.Lineno != tt.wantLineno || res.Highlight != tt.wantHighlight {
+				t.Errorf("got line %q at %d highlight %v, want %q at %d highlight %v",
+					res.Line, res.Lineno, res.Highlight, tt.wantLine, tt.wantLineno, tt.wantHighlight)
+			}
+		})
+	}
+}
+
+// TestGitlabHighlightUnicode is the regression test for offsets computed on a
+// lowercased copy: lowercasing "İ" adds a byte, which shifted the highlight
+// past the match and out of the line.
+func TestGitlabHighlightUnicode(t *testing.T) {
+	res := gitlabBlobSearch(t, "needle", "İİ\nİİ needle\n", "f.go", 1, SearchOptions{})[0]
+	if res.Line != "İİ needle" || res.Lineno != 2 {
+		t.Fatalf("got line %q at %d, want \"İİ needle\" at 2", res.Line, res.Lineno)
+	}
+	if got := res.Line[res.Highlight[0]:res.Highlight[1]]; got != "needle" {
+		t.Errorf("highlight %v covers %q, want \"needle\"", res.Highlight, got)
+	}
+}

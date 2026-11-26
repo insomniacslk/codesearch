@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net/url"
+	"regexp"
 	"strings"
 
 	"github.com/sirupsen/logrus"
@@ -165,42 +166,70 @@ func (g *Gitlab) toResult(client *gitlab.Client, withCtx gitlab.RequestOptionFun
 		logrus.Debugf("  Project Name: %s", projects[blob.ProjectID].Name)
 
 		project := projects[blob.ProjectID]
-		startOffset := strings.Index(strings.ToLower(blob.Data), strings.ToLower(searchString))
-		var (
-			start, end int
-			line       string
-		)
 		result := Result{
-			Backend:    g.Name(),
-			IsFilename: false,
-			Path:       blob.Path,
-			RepoURL:    project.WebURL,
-			FileURL:    fmt.Sprintf("%s/-/blob/%s/%s", project.WebURL, project.DefaultBranch, blob.Path),
-			Owner:      project.Namespace.Path,
-			RepoName:   project.Path,
-			Branch:     project.DefaultBranch,
+			Backend:  g.Name(),
+			Path:     blob.Path,
+			RepoURL:  project.WebURL,
+			FileURL:  fmt.Sprintf("%s/-/blob/%s/%s", project.WebURL, project.DefaultBranch, blob.Path),
+			Owner:    project.Namespace.Path,
+			RepoName: project.Path,
+			Branch:   project.DefaultBranch,
 		}
-		if startOffset == -1 {
+		lines := strings.Split(blob.Data, "\n")
+		idx, highlight, ok := gitlabLocate(lines, searchString)
+		if blob.Data == "" || (!ok && gitlabMatchesPath(blob.Path, searchString)) {
 			// The search pattern was found in the file name, not in the file
 			// content, so it's marked as such. Line, StartLine, Lineno, Context
 			// and Highlight are not set
 			result.IsFilename = true
 		} else {
-			lines := strings.Split(blob.Data, "\n")
-			linenoInBlob := strings.Count(blob.Data[:startOffset], "\n")
-			line = lines[linenoInBlob]
-			start = strings.Index(strings.ToLower(line), strings.ToLower(searchString))
-			end = start + len(searchString)
+			// When nothing can be located (e.g. advanced search syntax), GitLab
+			// still returned content that matched, so the snippet's first line
+			// is reported without a highlight rather than dropped.
 			// TODO fetch entire file content if the requested context is longer
 			// than the available one
-			result.Context.Before, result.Context.After = contextLines(lines, linenoInBlob+1, opts.LinesBefore, opts.LinesAfter)
-			result.Highlight = [2]int{start, end}
-			result.Line = line
-			result.Lineno = int(blob.Startline) + linenoInBlob
+			lineno := int(blob.Startline) + idx
+			result.Line = lines[idx]
+			result.Lineno = lineno
+			result.Highlight = highlight
+			result.Context.Before, result.Context.After = contextLines(lines, idx+1, opts.LinesBefore, opts.LinesAfter)
 			// add line fragment to URL
-			result.FileURL = fmt.Sprintf("%s/-/blob/%s/%s#L%d", project.WebURL, project.DefaultBranch, blob.Path, int(blob.Startline)+linenoInBlob)
+			result.FileURL = fmt.Sprintf("%s/-/blob/%s/%s#L%d", project.WebURL, project.DefaultBranch, blob.Path, lineno)
 		}
 		results = append(results, result)
 	}
 	return results, nil
+}
+
+// gitlabLocate finds the line a blob matched on and the match within it. The
+// whole query is tried first; failing that, its individual terms, because
+// GitLab's advanced search tokenises the query and a blob can match without
+// containing it verbatim. Offsets come from a case-insensitive regexp on the
+// original text, as lowercasing can change byte lengths (e.g. "İ").
+func gitlabLocate(lines []string, searchString string) (int, [2]int, bool) {
+	for _, patterns := range [][]string{{searchString}, strings.Fields(searchString)} {
+		var res []*regexp.Regexp
+		for _, p := range patterns {
+			res = append(res, regexp.MustCompile("(?i)"+regexp.QuoteMeta(p)))
+		}
+		for i, line := range lines {
+			for _, re := range res {
+				if loc := re.FindStringIndex(line); loc != nil {
+					return i, [2]int{loc[0], loc[1]}, true
+				}
+			}
+		}
+	}
+	return 0, [2]int{}, false
+}
+
+// gitlabMatchesPath reports whether any term of the query occurs in the path.
+func gitlabMatchesPath(path, searchString string) bool {
+	path = strings.ToLower(path)
+	for _, term := range strings.Fields(searchString) {
+		if strings.Contains(path, strings.ToLower(term)) {
+			return true
+		}
+	}
+	return false
 }
