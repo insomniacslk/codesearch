@@ -338,6 +338,47 @@ func TestGitlabHighlightUnicode(t *testing.T) {
 	}
 }
 
+// TestGitlabNumericScope is the regression test for a numeric group or
+// project: YAML decodes it as a number, which was dropped, so the search ran
+// over every project the token can see.
+func TestGitlabNumericScope(t *testing.T) {
+	for _, tt := range []struct {
+		name               string
+		params             BackendParams
+		wantGroup, wantErr string
+		wantProject        string
+	}{
+		{name: "int group", params: BackendParams{"group": 42}, wantGroup: "42"},
+		{name: "int64 project", params: BackendParams{"project": int64(7)}, wantProject: "7"},
+		{name: "uint group", params: BackendParams{"group": uint(42)}, wantGroup: "42"},
+		{name: "integral float", params: BackendParams{"group": 42.0}, wantGroup: "42"},
+		{name: "fractional float", params: BackendParams{"group": 42.5}, wantErr: "group"},
+		{name: "bool", params: BackendParams{"project": true}, wantErr: "project"},
+		{name: "empty group with project", params: BackendParams{"group": "", "project": "p"}, wantProject: "p"},
+		{name: "nil group with project", params: BackendParams{"group": nil, "project": 3}, wantProject: "3"},
+		{name: "both numeric", params: BackendParams{"group": 1, "project": 2}, wantErr: "both"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			tt.params["token"] = "t"
+			tt.params["api_endpoint"] = "https://gitlab.example.com/api/v4"
+			b, err := (&Gitlab{}).New("test", tt.params)
+			if tt.wantErr != "" {
+				if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+					t.Fatalf("got error %v, want one containing %q", err, tt.wantErr)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("New failed: %v", err)
+			}
+			gl := b.(*Gitlab)
+			if gl.Group() != tt.wantGroup || gl.Project() != tt.wantProject {
+				t.Errorf("got group %q project %q, want %q and %q", gl.Group(), gl.Project(), tt.wantGroup, tt.wantProject)
+			}
+		})
+	}
+}
+
 // TestGitlabNilNamespace checks that a project without a namespace does not
 // crash result conversion.
 func TestGitlabNilNamespace(t *testing.T) {
