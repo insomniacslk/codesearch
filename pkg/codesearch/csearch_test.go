@@ -515,6 +515,19 @@ func TestCsearchSkipsStaleFiles(t *testing.T) {
 	}
 }
 
+// TestCsearchSearchInFilenamesHonoursCancellation covers the -F walk, which
+// never looked at the context, so neither --timeout nor Ctrl-C stopped it.
+func TestCsearchSearchInFilenamesHonoursCancellation(t *testing.T) {
+	indexFile, _ := newTestIndex(t, filenameTree)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	results, err := newCsearchBackend(t, indexFile).Search(ctx, "main.go", SearchOptions{SearchInFilenames: true})
+	if !errors.Is(err, context.Canceled) {
+		t.Errorf("got %d results and error %v, want context.Canceled", len(results), err)
+	}
+}
+
 // TestCsearchSearchInFilenamesIsOrdered covers -F results coming out of a map
 // in random order, which made --limit pick a different subset on every run.
 func TestCsearchSearchInFilenamesIsOrdered(t *testing.T) {

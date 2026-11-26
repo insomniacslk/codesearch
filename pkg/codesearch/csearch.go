@@ -159,6 +159,11 @@ func (g *Csearch) Search(ctx context.Context, searchString string, opts SearchOp
 			// results are appended as the walk visits them, which is lexical
 			// order, so that --limit picks the same subset on every run
 			err = filepath.Walk(indexedPath, func(path string, info os.FileInfo, err error) error {
+				// a big tree takes a long time to walk, and the walk is the
+				// only thing that can notice --timeout or Ctrl-C
+				if ctxErr := ctx.Err(); ctxErr != nil {
+					return ctxErr
+				}
 				// info is nil whenever err is set, which happens for
 				// directories that cannot be read. Skip them rather than
 				// aborting the whole walk.
@@ -186,6 +191,9 @@ func (g *Csearch) Search(ctx context.Context, searchString string, opts SearchOp
 				return nil
 			})
 			if err != nil {
+				if ctxErr := ctx.Err(); ctxErr != nil {
+					return nil, ctxErr
+				}
 				return nil, fmt.Errorf("failed to walk the source tree: %w", err)
 			}
 		}
