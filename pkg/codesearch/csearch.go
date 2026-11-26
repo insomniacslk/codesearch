@@ -98,11 +98,13 @@ func contextLines(lines []string, lineno, before, after int) ([]string, []string
 // hasPathPrefix reports whether s is prefix or sits underneath it, comparing
 // whole path components so that "/src/repo" does not match "/src/repo2".
 func hasPathPrefix(s, prefix string) bool {
-	prefix = strings.TrimRight(prefix, "/")
-	if prefix == "" {
-		return false
+	trimmed := strings.TrimRight(prefix, "/")
+	if trimmed == "" {
+		// a root prefix trims to nothing, but it still contains every
+		// absolute path; an empty prefix contains nothing
+		return prefix != "" && strings.HasPrefix(s, "/")
 	}
-	return s == prefix || strings.HasPrefix(s, prefix+"/")
+	return s == trimmed || strings.HasPrefix(s, trimmed+"/")
 }
 
 func removePathPrefix(s, prefix string) string {
