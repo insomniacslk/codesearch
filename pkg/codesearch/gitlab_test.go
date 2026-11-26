@@ -28,7 +28,7 @@ func (g *gitlabRecorder) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.WriteHeader(http.StatusNotFound)
-	fmt.Fprint(w, `{"message":"404 Not Found"}`)
+	_, _ = fmt.Fprint(w, `{"message":"404 Not Found"}`)
 }
 
 func (g *gitlabRecorder) requested(substr string) bool {
@@ -90,7 +90,7 @@ func TestGitlabAddressesScopeDirectly(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			rec := &gitlabRecorder{handler: func(w http.ResponseWriter, r *http.Request) bool {
 				if strings.HasSuffix(r.URL.Path, "/search") {
-					fmt.Fprint(w, `[]`)
+					_, _ = fmt.Fprint(w, `[]`)
 					return true
 				}
 				return false
@@ -137,14 +137,14 @@ func TestGitlabScopeBeyondFirstPage(t *testing.T) {
 				switch r.URL.Path {
 				case tt.listPath:
 					// a first page that does not contain the wanted scope
-					fmt.Fprint(w, `[{"id":1,"name":"unrelated","path":"unrelated"}]`)
+					_, _ = fmt.Fprint(w, `[{"id":1,"name":"unrelated","path":"unrelated"}]`)
 					return true
 				case tt.searchPath:
-					fmt.Fprint(w, `[{"basename":"f","data":"needle\n","path":"f.go",
+					_, _ = fmt.Fprint(w, `[{"basename":"f","data":"needle\n","path":"f.go",
 						"filename":"f.go","id":null,"ref":"main","startline":1,"project_id":9}]`)
 					return true
 				case "/api/v4/projects/9":
-					fmt.Fprint(w, `{"id":9,"name":"proj","path":"proj","default_branch":"main",
+					_, _ = fmt.Fprint(w, `{"id":9,"name":"proj","path":"proj","default_branch":"main",
 						"web_url":"https://gitlab.example.com/ns/proj","namespace":{"path":"ns"}}`)
 					return true
 				}
@@ -188,7 +188,7 @@ func TestGitlabPaginatesBlobs(t *testing.T) {
 	rec := &gitlabRecorder{handler: func(w http.ResponseWriter, r *http.Request) bool {
 		if !strings.HasSuffix(r.URL.Path, "/search") {
 			if r.URL.Path == "/api/v4/projects/9" {
-				fmt.Fprint(w, `{"id":9,"name":"proj","path":"proj","default_branch":"main",
+				_, _ = fmt.Fprint(w, `{"id":9,"name":"proj","path":"proj","default_branch":"main",
 					"web_url":"https://gitlab.example.com/ns/proj","namespace":{"path":"ns"}}`)
 				return true
 			}
@@ -198,7 +198,7 @@ func TestGitlabPaginatesBlobs(t *testing.T) {
 		if pages < 3 {
 			w.Header().Set("X-Next-Page", fmt.Sprint(pages+1))
 		}
-		fmt.Fprintf(w, `[{"basename":"f","data":"needle\n","path":"f%d.go",
+		_, _ = fmt.Fprintf(w, `[{"basename":"f","data":"needle\n","path":"f%d.go",
 			"filename":"f%d.go","ref":"main","startline":1,"project_id":9}]`, pages, pages)
 		return true
 	}}
