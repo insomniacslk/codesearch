@@ -156,7 +156,8 @@ func (g *Csearch) Search(ctx context.Context, searchString string, opts SearchOp
 		}
 		var results Results
 		for _, indexedPath := range ix.Paths() {
-			files := make(map[string]struct{})
+			// results are appended as the walk visits them, which is lexical
+			// order, so that --limit picks the same subset on every run
 			err = filepath.Walk(indexedPath, func(path string, info os.FileInfo, err error) error {
 				// info is nil whenever err is set, which happens for
 				// directories that cannot be read. Skip them rather than
@@ -169,19 +170,11 @@ func (g *Csearch) Search(ctx context.Context, searchString string, opts SearchOp
 					return nil
 				}
 				shortName := removePathPrefix(path, indexedPath)
-				if re.MatchString(shortName) {
-					logrus.Debugf("Adding file %s", path)
-					files[path] = struct{}{}
+				if !re.MatchString(shortName) {
+					return nil
 				}
-				return nil
-			})
-			if err != nil {
-				return nil, fmt.Errorf("failed to walk the source tree: %w", err)
-			}
-			for path := range files {
-				shortName := removePathPrefix(path, indexedPath)
 				logrus.Debugf("indexPath=%s path=%s shortName=%s", indexedPath, path, shortName)
-				result := Result{
+				results = append(results, Result{
 					Backend:    g.Name(),
 					Path:       shortName,
 					RepoURL:    "file://" + indexedPath,
@@ -189,8 +182,11 @@ func (g *Csearch) Search(ctx context.Context, searchString string, opts SearchOp
 					Owner:      "",
 					RepoName:   indexedPath,
 					IsFilename: true,
-				}
-				results = append(results, result)
+				})
+				return nil
+			})
+			if err != nil {
+				return nil, fmt.Errorf("failed to walk the source tree: %w", err)
 			}
 		}
 		return results, nil
