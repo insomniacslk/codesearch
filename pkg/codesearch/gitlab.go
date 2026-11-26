@@ -3,8 +3,10 @@ package codesearch
 import (
 	"context"
 	"fmt"
+	"math"
 	"net/url"
 	"regexp"
+	"strconv"
 	"strings"
 
 	"github.com/sirupsen/logrus"
@@ -21,9 +23,15 @@ type Gitlab struct {
 }
 
 func (g *Gitlab) New(name string, params BackendParams) (Backend, error) {
-	group := params.GetString("group")
-	project := params.GetString("project")
-	if group != nil && project != nil {
+	group, err := gitlabScopeParam(params, "group")
+	if err != nil {
+		return nil, err
+	}
+	project, err := gitlabScopeParam(params, "project")
+	if err != nil {
+		return nil, err
+	}
+	if group != "" && project != "" {
 		return nil, fmt.Errorf("cannot specify both 'project' and 'group'")
 	}
 	token, err := params.ResolveToken()
@@ -34,18 +42,35 @@ func (g *Gitlab) New(name string, params BackendParams) (Backend, error) {
 	if apiEndpoint == nil {
 		return nil, fmt.Errorf("missing 'api_endpoint' parameter")
 	}
-	gl := Gitlab{
+	return &Gitlab{
 		name:        name,
 		token:       token,
 		apiEndpoint: *apiEndpoint,
+		group:       group,
+		project:     project,
+	}, nil
+}
+
+// gitlabScopeParam reads a group or project, which may be a numeric ID or a
+// full path. YAML decodes a bare number as an int or a float, and GetString
+// would drop it, silently widening the search to every project the token can
+// see; so numbers are accepted and any other type is an error.
+func gitlabScopeParam(params BackendParams, key string) (string, error) {
+	switch v := params.Get(key).(type) {
+	case nil:
+		return "", nil
+	case string:
+		return v, nil
+	case int, int8, int16, int32, int64, uint, uint8, uint16, uint32, uint64:
+		return fmt.Sprint(v), nil
+	case float64:
+		if v == math.Trunc(v) && !math.IsInf(v, 0) {
+			return strconv.FormatFloat(v, 'f', -1, 64), nil
+		}
+		return "", fmt.Errorf("parameter '%s' must be an integer ID or a path, got %v", key, v)
+	default:
+		return "", fmt.Errorf("parameter '%s' must be an integer ID or a path, got %T", key, v)
 	}
-	if group != nil {
-		gl.group = *group
-	}
-	if project != nil {
-		gl.project = *project
-	}
-	return &gl, nil
 }
 
 func (g *Gitlab) Name() string {
