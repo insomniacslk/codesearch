@@ -196,3 +196,28 @@ func TestBackendsResolveTokens(t *testing.T) {
 		})
 	}
 }
+
+// TestValidateBackendNamesIgnoreCase covers a default backend written with
+// different case from the key under backends, which viper lowercases.
+func TestValidateBackendNamesIgnoreCase(t *testing.T) {
+	c := Config{
+		DefaultBackends: []string{"GitHub_Me"},
+		Backends:        map[string]BackendConfig{"github_me": {Type: BackendTypeCsearch}},
+	}
+	if err := c.Validate(); err != nil {
+		t.Errorf("got error %v, want nil", err)
+	}
+	for _, name := range []string{"all", "ALL", "All"} {
+		c := Config{Backends: map[string]BackendConfig{name: {Type: BackendTypeCsearch}}}
+		if err := c.Validate(); err == nil {
+			t.Errorf("%q: got nil error, want the name to be reserved", name)
+		}
+	}
+	c = Config{
+		DefaultBackends: []string{"ALL", "x"},
+		Backends:        map[string]BackendConfig{"x": {Type: BackendTypeCsearch}},
+	}
+	if err := c.Validate(); err == nil {
+		t.Error("got nil error, want ALL combined with other backends to fail")
+	}
+}

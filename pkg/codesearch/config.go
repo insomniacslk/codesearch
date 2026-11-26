@@ -125,28 +125,38 @@ func BackendTypeByName(name string) BackendType {
 	}
 }
 
+// AllBackends is the reserved name that selects every configured backend.
+const AllBackends = "all"
+
+// LookupBackend returns the key under which a backend is configured, matching
+// the name without regard to case. Viper lowercases every map key, so a backend
+// written as GitHub_Me is stored as github_me, while the same name in
+// default_backends or on the command line keeps its case.
+func (c *Config) LookupBackend(name string) (string, bool) {
+	if _, ok := c.Backends[name]; ok {
+		return name, true
+	}
+	for key := range c.Backends {
+		if strings.EqualFold(key, name) {
+			return key, true
+		}
+	}
+	return "", false
+}
+
 func (c *Config) Validate() error {
 	// ensure that default_backends is either "all" or a list of backend names
 	for _, name := range c.DefaultBackends {
-		if name == "all" {
+		if strings.EqualFold(name, AllBackends) {
 			if len(c.DefaultBackends) > 1 {
 				return fmt.Errorf("default_backends: all backends requested, but other backends are specified too")
 			}
-		} else {
-			found := false
-			for bname := range c.Backends {
-				if name == bname {
-					found = true
-					break
-				}
-			}
-			if !found {
-				return fmt.Errorf("default_backends: unknown backend %q", name)
-			}
+		} else if _, ok := c.LookupBackend(name); !ok {
+			return fmt.Errorf("default_backends: unknown backend %q", name)
 		}
 	}
 	for name, backend := range c.Backends {
-		if name == "all" {
+		if strings.EqualFold(name, AllBackends) {
 			return fmt.Errorf("backend name 'all' is reserved")
 		}
 		if BackendTypeByName(string(backend.Type)) == BackendTypeUnknown {
