@@ -702,3 +702,56 @@ func TestGithubLimitDoesNotChangeTheLeadingResults(t *testing.T) {
 		}
 	}
 }
+
+// TestGithubNegativeContext is the regression test for a panic: a negative
+// LinesBefore or LinesAfter produced a reversed slice of the file lines.
+func TestGithubNegativeContext(t *testing.T) {
+	file := "one\ntwo\nthree needle\nfour\nfive\n"
+	for _, opts := range []SearchOptions{
+		{LinesBefore: -1},
+		{LinesAfter: -1},
+		{LinesBefore: -5, LinesAfter: -5},
+	} {
+		t.Run(fmt.Sprintf("before=%d,after=%d", opts.LinesBefore, opts.LinesAfter), func(t *testing.T) {
+			srv := githubServer(t, codeResultJSON("src/f.go", "three needle", 6, 12),
+				fileContents(base64File(file)))
+			defer srv.Close()
+
+			results, err := newGithubBackend(t, srv.URL).Search(context.Background(), "needle", opts)
+			if err != nil {
+				t.Fatalf("search failed: %v", err)
+			}
+			if len(results) != 1 {
+				t.Fatalf("got %d results, want 1", len(results))
+			}
+			if r := results[0]; len(r.Context.Before) != 0 || len(r.Context.After) != 0 {
+				t.Errorf("got context %+v, want none", r.Context)
+			}
+		})
+	}
+}
+
+// TestGithubContextLines checks that the context still comes from the file
+// around the reported line.
+func TestGithubContextLines(t *testing.T) {
+	file := "one\ntwo\nthree needle\nfour\nfive\n"
+	srv := githubServer(t, codeResultJSON("src/f.go", "three needle", 6, 12),
+		fileContents(base64File(file)))
+	defer srv.Close()
+
+	results, err := newGithubBackend(t, srv.URL).Search(context.Background(), "needle",
+		SearchOptions{LinesBefore: 1, LinesAfter: 2})
+	if err != nil {
+		t.Fatalf("search failed: %v", err)
+	}
+	if len(results) != 1 {
+		t.Fatalf("got %d results, want 1", len(results))
+	}
+	r := results[0]
+	if got, want := strings.Join(r.Context.Before, "|"), "two"; got != want {
+		t.Errorf("before: got %q, want %q", got, want)
+	}
+	if got, want := strings.Join(r.Context.After, "|"), "four|five"; got != want {
+		t.Errorf("after: got %q, want %q", got, want)
+	}
+}
