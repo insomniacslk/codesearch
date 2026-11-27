@@ -78,7 +78,13 @@ func (g *Github) Search(ctx context.Context, terms string, opts SearchOptions) (
 	ctx, cancel := searchContext(ctx, opts.Timeout)
 	defer cancel()
 
-	sopts := github.SearchOptions{TextMatch: true}
+	// The code search quota is small (10 requests a minute at the time of
+	// writing) and GitHub returns at most 1000 hits for a query, so the largest
+	// page size is what lets a full search fit in one quota window.
+	sopts := github.SearchOptions{
+		TextMatch:   true,
+		ListOptions: github.ListOptions{PerPage: githubSearchPageSize},
+	}
 	var csresults []*github.CodeResult
 	for {
 		var (
@@ -92,6 +98,12 @@ func (g *Github) Search(ctx context.Context, terms string, opts SearchOptions) (
 			return err
 		})
 		if err != nil {
+			if len(csresults) > 0 && githubIsRateLimit(err) {
+				// the pages fetched so far are still good, and dropping them
+				// would leave a broad search with no way to ever succeed
+				logrus.Warnf("Results are incomplete, rate limited after %d hits: %v", len(csresults), err)
+				break
+			}
 			return nil, fmt.Errorf("search failed: %w", err)
 		}
 		csresults = append(csresults, results.CodeResults...)
@@ -105,6 +117,16 @@ func (g *Github) Search(ctx context.Context, terms string, opts SearchOptions) (
 		sopts.Page = response.NextPage
 	}
 	return g.toResult(ctx, client, csresults, opts)
+}
+
+// githubSearchPageSize is the largest page size the search API accepts.
+const githubSearchPageSize = 100
+
+// githubIsRateLimit reports whether err is a primary or secondary rate limit.
+func githubIsRateLimit(err error) bool {
+	var rlErr *github.RateLimitError
+	var abuseErr *github.AbuseRateLimitError
+	return errors.As(err, &rlErr) || errors.As(err, &abuseErr)
 }
 
 const maxAttempts = 3
@@ -211,6 +233,12 @@ func (g *Github) fileContent(ctx context.Context, client *github.Client, cache m
 func (g *Github) fetchFile(ctx context.Context, client *github.Client, owner, repo, path string) (string, error) {
 	fullPath := fmt.Sprintf("%s/%s/%s", owner, repo, path)
 	var rc *github.RepositoryContent
+	// The client remembers the last rate limit per category and refuses later
+	// requests in that category without sending them. It derives the category
+	// from the URL path, which does not work behind an Enterprise /api/v3
+	// prefix: there an exhausted code search quota is filed under the core
+	// API and would block every file download. Let the server decide instead.
+	ctx = context.WithValue(ctx, github.BypassRateLimitCheck, true)
 	err := retry(ctx, func() error {
 		logrus.Debugf("Fetching file content, owner=%q repo=%q path=%q", owner, repo, path)
 		var (
@@ -250,9 +278,7 @@ func githubAbortsSearch(ctx context.Context, err error) bool {
 	if ctx.Err() != nil {
 		return true
 	}
-	var rlErr *github.RateLimitError
-	var abuseErr *github.AbuseRateLimitError
-	return errors.As(err, &rlErr) || errors.As(err, &abuseErr)
+	return githubIsRateLimit(err)
 }
 
 // githubMatchIndices returns the highlight of match relative to fragment, or

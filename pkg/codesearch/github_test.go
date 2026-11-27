@@ -961,3 +961,63 @@ func TestGithubInvalidIndices(t *testing.T) {
 		})
 	}
 }
+
+// TestGithubSearchRequestsLargestPage: with the default page size of 30 a
+// broad search needs more requests than the code search quota allows in one
+// window, so it could never complete.
+func TestGithubSearchRequestsLargestPage(t *testing.T) {
+	var perPage atomic.Value
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		perPage.Store(r.URL.Query().Get("per_page"))
+		searchPage(w, r, "", 0)
+	}))
+	defer srv.Close()
+
+	if _, err := newGithubBackend(t, srv.URL).Search(context.Background(), "needle", SearchOptions{}); err != nil {
+		t.Fatalf("search failed: %v", err)
+	}
+	if got := perPage.Load(); got != "100" {
+		t.Errorf("got per_page %q, want %q", got, "100")
+	}
+}
+
+// TestGithubRateLimitKeepsEarlierPages: a rate limit part way through the
+// pages must not discard the hits that were already fetched.
+func TestGithubRateLimitKeepsEarlierPages(t *testing.T) {
+	var searches int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.Contains(r.URL.Path, "/search/code"):
+			n := int(atomic.AddInt32(&searches, 1))
+			if n <= 2 {
+				searchPage(w, r, codeResultJSON(fmt.Sprintf("p%d.go", n), "needle", 0, 6), n+1)
+				return
+			}
+			w.Header().Set("X-RateLimit-Limit", "10")
+			w.Header().Set("X-RateLimit-Remaining", "0")
+			w.Header().Set("X-RateLimit-Reset", strconv.FormatInt(time.Now().Add(time.Hour).Unix(), 10))
+			w.WriteHeader(http.StatusForbidden)
+			_, _ = fmt.Fprint(w, `{"message":"API rate limit exceeded"}`)
+		case strings.Contains(r.URL.Path, "/contents/"):
+			_, _ = fmt.Fprint(w, base64File("needle\n"))
+		default:
+			t.Errorf("unexpected request to %s", r.URL.Path)
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+
+	results, err := newGithubBackend(t, srv.URL).Search(context.Background(), "needle", SearchOptions{})
+	if err != nil {
+		t.Fatalf("search failed: %v", err)
+	}
+	if len(results) != 2 {
+		t.Fatalf("got %d results, want the 2 from the pages before the rate limit", len(results))
+	}
+	if results[0].Path != "p1.go" || results[1].Path != "p2.go" {
+		t.Errorf("got paths %q and %q, want p1.go and p2.go", results[0].Path, results[1].Path)
+	}
+	if got := atomic.LoadInt32(&searches); got != 3 {
+		t.Errorf("got %d search requests, want 3", got)
+	}
+}
