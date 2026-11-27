@@ -6,7 +6,7 @@ toolchain go1.24.2
 
 require (
 	github.com/fatih/color v1.18.0
-	github.com/google/codesearch v1.2.0
+	github.com/google/codesearch v1.3.0-rc.1
 	github.com/google/go-github/v76 v76.0.0
 	github.com/kirsle/configdir v0.0.0-20170128060238-e45d2f54772f
 	github.com/sirupsen/logrus v1.9.3
