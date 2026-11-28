@@ -1,6 +1,7 @@
 package codesearch
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -356,14 +357,67 @@ func (g *Github) fetchFile(ctx context.Context, client *github.Client, ref githu
 	if rc == nil {
 		return "", fmt.Errorf("no file content returned for %q", fullPath)
 	}
-	// GetContent decodes according to the reported encoding and reports the
-	// >1MB "none" case, rather than dereferencing a Content that GitHub may
-	// not have populated at all.
+	// A file above 1MB comes back with encoding "none" and no content. The
+	// same endpoint serves it whole when asked for the raw media type.
+	if rc.GetEncoding() == "none" {
+		if size := rc.GetSize(); size > githubMaxFileSize {
+			return "", fmt.Errorf("file %q is too large to download: %d bytes, the limit is %d", fullPath, size, githubMaxFileSize)
+		}
+		return g.fetchRawFile(ctx, client, ref)
+	}
+	// GetContent decodes according to the reported encoding, rather than
+	// dereferencing a Content that GitHub may not have populated at all.
 	text, err := rc.GetContent()
 	if err != nil {
 		return "", fmt.Errorf("failed to read content of file %q: %w", fullPath, err)
 	}
 	return text, nil
+}
+
+// githubMaxFileSize bounds the files that are downloaded whole. The file is
+// held in memory, and GitHub does not serve more than 100MB through the
+// contents API in any case.
+const githubMaxFileSize = 32 << 20
+
+// fetchRawFile downloads a file through the raw media type of the contents
+// API, which is how GitHub serves the files it does not embed in the JSON
+// response.
+func (g *Github) fetchRawFile(ctx context.Context, client *github.Client, ref githubFileRef) (string, error) {
+	// escaped the way go-github escapes the path for GetContents
+	escapedPath := (&url.URL{Path: strings.TrimSuffix(ref.path, "/")}).String()
+	// The size that the first response reported was within the limit, but
+	// the file can have grown since, and the body is read as it comes.
+	body := &cappedBuffer{limit: githubMaxFileSize}
+	err := retry(ctx, func() error {
+		logrus.Debugf("Fetching raw file content of %q", ref)
+		req, err := client.NewRequest("GET", fmt.Sprintf("repos/%v/%v/contents/%v", ref.owner, ref.repo, escapedPath), nil)
+		if err != nil {
+			return err
+		}
+		req.Header.Set("Accept", "application/vnd.github.raw+json")
+		body.buf.Reset()
+		_, err = client.Do(ctx, req, body)
+		return err
+	})
+	if err != nil {
+		return "", fmt.Errorf("failed to get raw content of file %q: %w", ref, err)
+	}
+	return body.buf.String(), nil
+}
+
+// cappedBuffer is a buffer that refuses to grow beyond limit bytes. The
+// bytes.Buffer is a field rather than embedded, so that io.Copy has only
+// Write to go through and cannot reach the buffer's own ReadFrom.
+type cappedBuffer struct {
+	buf   bytes.Buffer
+	limit int
+}
+
+func (b *cappedBuffer) Write(p []byte) (int, error) {
+	if b.buf.Len()+len(p) > b.limit {
+		return 0, fmt.Errorf("content is larger than the limit of %d bytes", b.limit)
+	}
+	return b.buf.Write(p)
 }
 
 // githubAbortsSearch reports whether a failure to fetch one file must end the

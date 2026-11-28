@@ -1,6 +1,7 @@
 package codesearch
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
 	"errors"
@@ -447,20 +448,94 @@ func githubAssertFragmentResult(t *testing.T, results Results, wantLine string) 
 	}
 }
 
+// largeFileServer serves one hit for a file that GitHub does not embed in the
+// JSON response: the plain request reports encoding "none" with this size,
+// and the request for the raw media type is answered by raw.
+func largeFileServer(t *testing.T, size int, raw func(w http.ResponseWriter)) *httptest.Server {
+	t.Helper()
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.Contains(r.URL.Path, "/search/code"):
+			searchPage(w, r, codeResultJSON("src/f.go", "needle", 0, 6), 0)
+		case strings.Contains(r.URL.Path, "/contents/"):
+			if r.Header.Get("Accept") == "application/vnd.github.raw+json" {
+				raw(w)
+				return
+			}
+			_, _ = fmt.Fprintf(w, `{"type":"file","encoding":"none","name":"f.go","path":"src/f.go","size":%d}`, size)
+		default:
+			t.Errorf("unexpected request to %s", r.URL.Path)
+			http.NotFound(w, r)
+		}
+	}))
+}
+
 // TestGithubSearchLargeFile covers the >1MB case, where GitHub reports
 // encoding "none" and omits the content entirely. The old code dereferenced
-// Content unconditionally and panicked; later it failed the whole search. The
-// match is still worth showing, from the fragment.
+// Content unconditionally and panicked; later it showed only the fragment.
+// The file is now downloaded through the raw media type, so the match gets
+// its line number and context like any other.
 func TestGithubSearchLargeFile(t *testing.T) {
-	srv := githubServer(t, codeResultJSON("src/f.go", "needle", 0, 6),
-		fileContents(`{"type":"file","encoding":"none","name":"f.go","path":"src/f.go","size":2000000}`))
+	file := strings.Repeat("filler line\n", 100000) + "before\nneedle here\nafter\n"
+	srv := largeFileServer(t, len(file), func(w http.ResponseWriter) { _, _ = fmt.Fprint(w, file) })
 	defer srv.Close()
 
-	results, err := newGithubBackend(t, srv.URL).Search(context.Background(), "needle", SearchOptions{})
+	results, err := newGithubBackend(t, srv.URL).Search(context.Background(), "needle", SearchOptions{LinesBefore: 1, LinesAfter: 1})
 	if err != nil {
 		t.Fatalf("search failed: %v", err)
 	}
-	githubAssertFragmentResult(t, results, "needle")
+	if len(results) != 1 {
+		t.Fatalf("got %d results, want 1", len(results))
+	}
+	r := results[0]
+	if r.Lineno != 100002 || r.Line != "needle here" {
+		t.Errorf("got line %d %q, want line 100002 %q", r.Lineno, r.Line, "needle here")
+	}
+	if len(r.Context.Before) != 1 || r.Context.Before[0] != "before" || len(r.Context.After) != 1 || r.Context.After[0] != "after" {
+		t.Errorf("got context %q and %q, want [before] and [after]", r.Context.Before, r.Context.After)
+	}
+	if !strings.HasSuffix(r.FileURL, "#L100002") {
+		t.Errorf("got file URL %q, want it to end in #L100002", r.FileURL)
+	}
+}
+
+// TestGithubSearchLargeFileUnavailable: when the raw download fails, or the
+// file is beyond what is worth holding in memory, the match is still shown,
+// from the fragment.
+func TestGithubSearchLargeFileUnavailable(t *testing.T) {
+	for name, tt := range map[string]struct {
+		size    int
+		wantRaw bool
+		// body is the size of the raw response, 0 for a failure
+		body int
+	}{
+		"raw download fails": {size: 2000000, wantRaw: true},
+		"too large":          {size: githubMaxFileSize + 1, wantRaw: false},
+		// the first response reports a size within the limit, the body is not
+		"grew beyond the limit": {size: 2000000, wantRaw: true, body: githubMaxFileSize + 1},
+	} {
+		t.Run(name, func(t *testing.T) {
+			var rawRequests int32
+			srv := largeFileServer(t, tt.size, func(w http.ResponseWriter) {
+				atomic.AddInt32(&rawRequests, 1)
+				if tt.body > 0 {
+					_, _ = w.Write(bytes.Repeat([]byte("needle\n"), tt.body/7+1))
+					return
+				}
+				http.Error(w, "not found", http.StatusNotFound)
+			})
+			defer srv.Close()
+
+			results, err := newGithubBackend(t, srv.URL).Search(context.Background(), "needle", SearchOptions{})
+			if err != nil {
+				t.Fatalf("search failed: %v", err)
+			}
+			githubAssertFragmentResult(t, results, "needle")
+			if got := atomic.LoadInt32(&rawRequests) > 0; got != tt.wantRaw {
+				t.Errorf("got raw request %v, want %v", got, tt.wantRaw)
+			}
+		})
+	}
 }
 
 // TestGithubSearchNullContent covers a file entry whose content field is
