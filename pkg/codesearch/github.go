@@ -385,7 +385,9 @@ const githubMaxFileSize = 32 << 20
 func (g *Github) fetchRawFile(ctx context.Context, client *github.Client, ref githubFileRef) (string, error) {
 	// escaped the way go-github escapes the path for GetContents
 	escapedPath := (&url.URL{Path: strings.TrimSuffix(ref.path, "/")}).String()
-	var body bytes.Buffer
+	// The size that the first response reported was within the limit, but
+	// the file can have grown since, and the body is read as it comes.
+	body := &cappedBuffer{limit: githubMaxFileSize}
 	err := retry(ctx, func() error {
 		logrus.Debugf("Fetching raw file content of %q", ref)
 		req, err := client.NewRequest("GET", fmt.Sprintf("repos/%v/%v/contents/%v", ref.owner, ref.repo, escapedPath), nil)
@@ -393,14 +395,29 @@ func (g *Github) fetchRawFile(ctx context.Context, client *github.Client, ref gi
 			return err
 		}
 		req.Header.Set("Accept", "application/vnd.github.raw+json")
-		body.Reset()
-		_, err = client.Do(ctx, req, &body)
+		body.buf.Reset()
+		_, err = client.Do(ctx, req, body)
 		return err
 	})
 	if err != nil {
 		return "", fmt.Errorf("failed to get raw content of file %q: %w", ref, err)
 	}
-	return body.String(), nil
+	return body.buf.String(), nil
+}
+
+// cappedBuffer is a buffer that refuses to grow beyond limit bytes. The
+// bytes.Buffer is a field rather than embedded, so that io.Copy has only
+// Write to go through and cannot reach the buffer's own ReadFrom.
+type cappedBuffer struct {
+	buf   bytes.Buffer
+	limit int
+}
+
+func (b *cappedBuffer) Write(p []byte) (int, error) {
+	if b.buf.Len()+len(p) > b.limit {
+		return 0, fmt.Errorf("content is larger than the limit of %d bytes", b.limit)
+	}
+	return b.buf.Write(p)
 }
 
 // githubAbortsSearch reports whether a failure to fetch one file must end the

@@ -1,6 +1,7 @@
 package codesearch
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
 	"errors"
@@ -505,14 +506,22 @@ func TestGithubSearchLargeFileUnavailable(t *testing.T) {
 	for name, tt := range map[string]struct {
 		size    int
 		wantRaw bool
+		// body is the size of the raw response, 0 for a failure
+		body int
 	}{
 		"raw download fails": {size: 2000000, wantRaw: true},
 		"too large":          {size: githubMaxFileSize + 1, wantRaw: false},
+		// the first response reports a size within the limit, the body is not
+		"grew beyond the limit": {size: 2000000, wantRaw: true, body: githubMaxFileSize + 1},
 	} {
 		t.Run(name, func(t *testing.T) {
 			var rawRequests int32
 			srv := largeFileServer(t, tt.size, func(w http.ResponseWriter) {
 				atomic.AddInt32(&rawRequests, 1)
+				if tt.body > 0 {
+					_, _ = w.Write(bytes.Repeat([]byte("needle\n"), tt.body/7+1))
+					return
+				}
 				http.Error(w, "not found", http.StatusNotFound)
 			})
 			defer srv.Close()
