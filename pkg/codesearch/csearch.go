@@ -9,8 +9,10 @@ import (
 	"os"
 	"path/filepath"
 	goregexp "regexp"
+	"runtime"
 	"strconv"
 	"strings"
+	"sync"
 
 	"github.com/google/codesearch/index"
 	"github.com/google/codesearch/regexp"
@@ -260,123 +262,220 @@ func (g *Csearch) Search(ctx context.Context, searchString string, opts SearchOp
 	if err != nil {
 		return nil, fmt.Errorf("failed to compile regexp pattern: %w", err)
 	}
-	stdout, stderr := bytes.Buffer{}, bytes.Buffer{}
-	grep := regexp.Grep{
-		Stdout: &stdout,
-		Stderr: &stderr,
+	q := index.RegexpQuery(re.Syntax)
+	post := ix.PostingQuery(q)
+	return g.toResult(ctx, pattern, ix, post, opts)
+}
+
+// csearchJob is the grep of one candidate file. The fields below done are set
+// before done is closed.
+type csearchJob struct {
+	name string
+	done chan struct{}
+
+	results Results
+	// warning says why the file was skipped or shown without context; it is
+	// logged by the consumer so that warnings come out in file order
+	warning string
+	err     error
+}
+
+// csearchGrepper greps files for one pattern. The codesearch matcher keeps
+// state between calls, so each worker needs its own.
+type csearchGrepper struct {
+	backend string
+	roots   []string
+	opts    SearchOptions
+	// locate finds the highlight within a matching line
+	locate *goregexp.Regexp
+	grep   regexp.Grep
+	stdout bytes.Buffer
+	stderr bytes.Buffer
+}
+
+func newCsearchGrepper(backend, pattern string, locate *goregexp.Regexp, roots []string, opts SearchOptions) (*csearchGrepper, error) {
+	re, err := regexp.Compile(pattern)
+	if err != nil {
+		return nil, fmt.Errorf("failed to compile regexp pattern: %w", err)
+	}
+	w := &csearchGrepper{backend: backend, roots: roots, opts: opts, locate: locate}
+	w.grep = regexp.Grep{
+		Stdout: &w.stdout,
+		Stderr: &w.stderr,
 		Regexp: re,
 		N:      true, // need lineno
 		H:      true, // do not print file names
 	}
-	q := index.RegexpQuery(re.Syntax)
-	post := ix.PostingQuery(q)
-	return g.toResult(ctx, pattern, ix, grep, post, opts)
+	return w, nil
 }
 
-func (g *Csearch) toResult(ctx context.Context, pattern string, ix *index.Index, grep regexp.Grep, post []int, opts SearchOptions) (Results, error) {
-	var results Results
-	roots := indexRoots(ix)
-	re, err := goregexp.Compile(pattern)
+func (g *Csearch) toResult(ctx context.Context, pattern string, ix *index.Index, post []int, opts SearchOptions) (Results, error) {
+	locate, err := goregexp.Compile(pattern)
 	if err != nil {
 		return nil, fmt.Errorf("failed to compile pattern for indexing: %w", err)
 	}
-	for _, fileid := range post {
-		if err := ctx.Err(); err != nil {
+	roots := indexRoots(ix)
+	workers := max(1, min(runtime.GOMAXPROCS(0), len(post)))
+	greppers := make([]*csearchGrepper, workers)
+	for i := range greppers {
+		if greppers[i], err = newCsearchGrepper(g.Name(), pattern, locate, roots, opts); err != nil {
 			return nil, err
 		}
+	}
+
+	// The index only narrows the search down to candidate files; each one
+	// still has to be read and matched, which is where the time goes. Workers
+	// grep the candidates in parallel, and the loop at the bottom collects
+	// them in index order, so the results are the same as from a serial run.
+	ctx, cancel := context.WithCancel(ctx)
+	var wg sync.WaitGroup
+	defer wg.Wait()
+	defer cancel()
+	jobs := make(chan *csearchJob)
+	// ordered bounds how far the workers run ahead of the collecting loop,
+	// which matters when --limit ends the search early
+	ordered := make(chan *csearchJob, 2*workers)
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		defer close(jobs)
+		defer close(ordered)
+		for _, fileid := range post {
+			job := &csearchJob{name: ix.Name(fileid).String(), done: make(chan struct{})}
+			logrus.Debugf("fileid=%d name=%q", fileid, job.name)
+			select {
+			case ordered <- job:
+			case <-ctx.Done():
+				return
+			}
+			select {
+			case jobs <- job:
+			case <-ctx.Done():
+				// nobody will run it, but the collecting loop may wait on it
+				close(job.done)
+				return
+			}
+		}
+	}()
+	for _, w := range greppers {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for job := range jobs {
+				if ctx.Err() == nil {
+					job.results, job.warning, job.err = w.file(job.name)
+				}
+				close(job.done)
+			}
+		}()
+	}
+
+	var results Results
+	for job := range ordered {
 		if opts.Limit > 0 && uint(len(results)) >= opts.Limit {
 			break
 		}
-		name := ix.Name(fileid).String()
-		logrus.Debugf("fileid=%d name=%q", fileid, name)
-		grep.File(name)
-		b := grep.Stdout.(*bytes.Buffer)
-		o := b.String()
-		b.Reset()
-		eb := grep.Stderr.(*bytes.Buffer)
-		e := strings.TrimSpace(eb.String())
-		eb.Reset()
-		if o == "" {
-			if e != "" {
-				// the index is a snapshot, so files that were deleted or
-				// made unreadable since cindex ran are the normal case and
-				// must not cost the hits from every other file
-				logrus.Warnf("Skipping %q: %s", name, e)
-				continue
-			}
-			// no output, no error, just continue
-			logrus.Debugf("Skipping empty file results")
-			continue
+		select {
+		case <-job.done:
+		case <-ctx.Done():
+			return nil, ctx.Err()
 		}
-		// find the indexed path this file sits under, preferring the
-		// longest match so nested indexed roots resolve to the deeper one
-		var indexedPath string
-		for _, p := range roots {
-			if hasPathPrefix(name, p) && len(p) > len(indexedPath) {
-				indexedPath = p
-			}
+		if err := ctx.Err(); err != nil {
+			return nil, err
 		}
-		if indexedPath == "" {
-			return nil, fmt.Errorf("no indexed path found for %q", name)
+		if job.err != nil {
+			return nil, job.err
 		}
-		shortName := removePathPrefix(name, indexedPath)
-		// read the file once for all of its matches, not once per match
-		var fileLines []string
-		if opts.LinesBefore > 0 || opts.LinesAfter > 0 {
-			fullText, err := os.ReadFile(name)
-			if err != nil {
-				logrus.Warnf("Cannot read %q for context, showing the match alone: %v", name, err)
-			} else {
-				fileLines = strings.Split(string(fullText), "\n")
-			}
+		if job.warning != "" {
+			logrus.Warn(job.warning)
 		}
-		olines := strings.Split(o, "\n")
-		for _, oline := range olines {
-			if oline == "" {
-				// skip empty lines reulting from the newline split
-				continue
-			}
-			parts := strings.SplitN(oline, ":", 2)
-			if len(parts) < 2 {
-				return nil, fmt.Errorf("malformed result line: has fewer than 2 components. Line: %q", oline)
-			}
-			lineno64, err := strconv.ParseInt(parts[0], 10, 64)
-			if err != nil {
-				return nil, fmt.Errorf("invalid line number: %w", err)
-			}
-			lineno := int(lineno64)
-			line := parts[1]
-			newlineIdx := strings.Index(line, "\n")
-			if newlineIdx != -1 {
-				line = line[:newlineIdx]
-			}
-			var before, after []string
-			if fileLines != nil {
-				before, after = contextLines(fileLines, lineno, opts.LinesBefore, opts.LinesAfter)
-			}
-			// find start and end offsets for highlight
-			offsets := re.FindAllStringIndex(line, -1)
-			// TODO use the offsets after the first one, once multiple highlight
-			// support is added to the Backend interface
-			var start, end int
-			if len(offsets) > 0 {
-				start, end = offsets[0][0], offsets[0][1]
-			}
-			result := Result{
-				Backend:   g.Name(),
-				Path:      shortName,
-				RepoURL:   "file://" + indexedPath,
-				FileURL:   "file://" + name,
-				Owner:     "",
-				RepoName:  indexedPath,
-				Branch:    "",
-				Context:   ResultContext{Before: before, After: after},
-				Lineno:    lineno,
-				Line:      line,
-				Highlight: [2]int{start, end},
-			}
-			results = append(results, result)
-		}
+		results = append(results, job.results...)
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
 	}
 	return results, nil
+}
+
+// file greps one file and returns its results, or a warning when the file
+// had to be skipped or is shown without context.
+func (w *csearchGrepper) file(name string) (results Results, warning string, err error) {
+	w.grep.File(name)
+	o := w.stdout.String()
+	w.stdout.Reset()
+	e := strings.TrimSpace(w.stderr.String())
+	w.stderr.Reset()
+	if o == "" {
+		if e != "" {
+			// the index is a snapshot, so files that were deleted or
+			// made unreadable since cindex ran are the normal case and
+			// must not cost the hits from every other file
+			return nil, fmt.Sprintf("Skipping %q: %s", name, e), nil
+		}
+		// no output, no error: the index gave a false positive
+		return nil, "", nil
+	}
+	// find the indexed path this file sits under, preferring the
+	// longest match so nested indexed roots resolve to the deeper one
+	var indexedPath string
+	for _, p := range w.roots {
+		if hasPathPrefix(name, p) && len(p) > len(indexedPath) {
+			indexedPath = p
+		}
+	}
+	if indexedPath == "" {
+		return nil, "", fmt.Errorf("no indexed path found for %q", name)
+	}
+	shortName := removePathPrefix(name, indexedPath)
+	// read the file once for all of its matches, not once per match
+	var fileLines []string
+	if w.opts.LinesBefore > 0 || w.opts.LinesAfter > 0 {
+		fullText, err := os.ReadFile(name)
+		if err != nil {
+			warning = fmt.Sprintf("Cannot read %q for context, showing the match alone: %v", name, err)
+		} else {
+			fileLines = strings.Split(string(fullText), "\n")
+		}
+	}
+	for _, oline := range strings.Split(o, "\n") {
+		if oline == "" {
+			// skip empty lines reulting from the newline split
+			continue
+		}
+		parts := strings.SplitN(oline, ":", 2)
+		if len(parts) < 2 {
+			return nil, "", fmt.Errorf("malformed result line: has fewer than 2 components. Line: %q", oline)
+		}
+		lineno64, err := strconv.ParseInt(parts[0], 10, 64)
+		if err != nil {
+			return nil, "", fmt.Errorf("invalid line number: %w", err)
+		}
+		lineno := int(lineno64)
+		line := parts[1]
+		var before, after []string
+		if fileLines != nil {
+			before, after = contextLines(fileLines, lineno, w.opts.LinesBefore, w.opts.LinesAfter)
+		}
+		// find start and end offsets for highlight
+		// TODO use the offsets after the first one, once multiple highlight
+		// support is added to the Backend interface
+		var start, end int
+		if loc := w.locate.FindStringIndex(line); loc != nil {
+			start, end = loc[0], loc[1]
+		}
+		results = append(results, Result{
+			Backend:   w.backend,
+			Path:      shortName,
+			RepoURL:   "file://" + indexedPath,
+			FileURL:   "file://" + name,
+			Owner:     "",
+			RepoName:  indexedPath,
+			Branch:    "",
+			Context:   ResultContext{Before: before, After: after},
+			Lineno:    lineno,
+			Line:      line,
+			Highlight: [2]int{start, end},
+		})
+	}
+	return results, warning, nil
 }
