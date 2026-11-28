@@ -2,8 +2,10 @@ package codesearch
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"math"
+	"net/http"
 	"net/url"
 	"regexp"
 	"strconv"
@@ -151,6 +153,12 @@ func (g *Gitlab) Search(ctx context.Context, searchString string, opts SearchOpt
 		someBlobs, response, err := search(&sopts)
 		logrus.Debugf("Search response: %+v", response)
 		if err != nil {
+			if len(blobs) > 0 && gitlabIsRateLimit(response, err) {
+				// the pages fetched so far are still good, and dropping them
+				// would leave a broad search with no way to ever succeed
+				logrus.Warnf("Results are incomplete, rate limited after %d hits: %v", len(blobs), err)
+				break
+			}
 			return nil, fmt.Errorf("failed to search blobs in %s: %w", scope, err)
 		}
 		blobs = append(blobs, someBlobs...)
@@ -225,6 +233,18 @@ func (g *Gitlab) toResult(client *gitlab.Client, withCtx gitlab.RequestOptionFun
 		results = append(results, result)
 	}
 	return results, nil
+}
+
+// gitlabIsRateLimit reports whether a request failed because GitLab is rate
+// limiting the token. The client retries such a request a few times itself,
+// so this is what is left when that did not help.
+func gitlabIsRateLimit(response *gitlab.Response, err error) bool {
+	if response != nil && response.StatusCode == http.StatusTooManyRequests {
+		return true
+	}
+	var errResp *gitlab.ErrorResponse
+	return errors.As(err, &errResp) && errResp.Response != nil &&
+		errResp.Response.StatusCode == http.StatusTooManyRequests
 }
 
 // gitlabProjectConcurrency is how many projects are requested at once.

@@ -516,3 +516,66 @@ func TestGitlabProjectFailureIsReported(t *testing.T) {
 		t.Error("every project was requested, want the search to stop early after a failure")
 	}
 }
+
+// gitlabRateLimitedServer serves `good` pages of one blob each and then
+// answers every further search with 429.
+func gitlabRateLimitedServer(t *testing.T, good int, searches *int32) *httptest.Server {
+	t.Helper()
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/v4/projects/9" {
+			_, _ = fmt.Fprint(w, `{"id":9,"name":"proj","path":"proj","default_branch":"main",
+				"web_url":"https://gitlab.example.com/ns/proj","namespace":{"path":"ns"}}`)
+			return
+		}
+		if !strings.HasSuffix(r.URL.Path, "/search") {
+			t.Errorf("unexpected request to %s", r.URL.Path)
+			http.NotFound(w, r)
+			return
+		}
+		page := 1
+		if p := r.URL.Query().Get("page"); p != "" {
+			_, _ = fmt.Sscan(p, &page)
+		}
+		atomic.AddInt32(searches, 1)
+		if page > good {
+			http.Error(w, `{"message":"429 Too Many Requests"}`, http.StatusTooManyRequests)
+			return
+		}
+		w.Header().Set("X-Next-Page", fmt.Sprint(page+1))
+		_, _ = fmt.Fprintf(w, `[{"basename":"f","data":"needle\n","path":"f%d.go",
+			"filename":"f%d.go","ref":"main","startline":1,"project_id":9}]`, page, page)
+	}))
+}
+
+// TestGitlabRateLimitKeepsEarlierPages: a rate limit part way through the
+// pages must not discard the hits that were already fetched.
+func TestGitlabRateLimitKeepsEarlierPages(t *testing.T) {
+	// the client retries a 429 for a few seconds before it gives up
+	t.Parallel()
+	var searches int32
+	srv := gitlabRateLimitedServer(t, 2, &searches)
+	defer srv.Close()
+
+	results, err := newGitlabBackend(t, srv.URL, BackendParams{}).Search(context.Background(), "needle", SearchOptions{})
+	if err != nil {
+		t.Fatalf("search failed: %v", err)
+	}
+	if got := resultPaths(results); !equalLines(got, []string{"f1.go", "f2.go"}) {
+		t.Errorf("got %q, want the 2 results from the pages before the rate limit", got)
+	}
+}
+
+// TestGitlabRateLimitOnFirstPage: with nothing fetched there is nothing to
+// keep, and an empty result would look like "no matches".
+func TestGitlabRateLimitOnFirstPage(t *testing.T) {
+	// the client retries a 429 for a few seconds before it gives up
+	t.Parallel()
+	var searches int32
+	srv := gitlabRateLimitedServer(t, 0, &searches)
+	defer srv.Close()
+
+	_, err := newGitlabBackend(t, srv.URL, BackendParams{}).Search(context.Background(), "needle", SearchOptions{})
+	if err == nil {
+		t.Fatal("got nil error, want a rate limit failure")
+	}
+}
