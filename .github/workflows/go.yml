@@ -6,12 +6,13 @@ name: Go
 on:
   push:
     branches: [ "main" ]
+  # every pull request, not only those into main: a stacked pull request has
+  # another pull request's branch as its base and would otherwise get no checks
   pull_request:
-    branches: [ "main" ]
 
 jobs:
 
-  build:
+  test:
     # macOS is not redundant here: the config search path is
     # $HOME/Library/Application Support rather than XDG_CONFIG_HOME, and the
     # filesystem is case-insensitive, neither of which Linux exercises.
@@ -20,7 +21,7 @@ jobs:
       matrix:
         os: [ubuntu-latest, macos-latest]
     runs-on: ${{ matrix.os }}
-    name: build (${{ matrix.os }})
+    name: build, lint and test (${{ matrix.os }})
     steps:
     - uses: actions/checkout@v4
 
