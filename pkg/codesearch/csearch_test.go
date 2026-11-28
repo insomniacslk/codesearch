@@ -177,10 +177,12 @@ func newTestIndex(t *testing.T, files map[string]string) (indexFile, root string
 	}
 	indexFile = filepath.Join(t.TempDir(), "csearchindex")
 	iw := index.Create(indexFile)
-	iw.AddPaths([]string{root})
+	iw.AddRoots([]index.Path{index.MakePath(root)})
 	err := filepath.Walk(root, func(p string, info os.FileInfo, err error) error {
 		if err == nil && !info.IsDir() {
-			iw.AddFile(p)
+			if err := iw.AddFile(p); err != nil {
+				t.Errorf("failed to index %q: %v", p, err)
+			}
 		}
 		return nil
 	})
@@ -472,18 +474,39 @@ func TestCsearchMissingIndex(t *testing.T) {
 		// when either is wrong, so these used to exit the test binary
 		{
 			name:    "header only",
-			setup:   csearchWriteIndexFile(indexMagic),
+			setup:   csearchWriteIndexFile(indexFormats[0].magic),
 			wantMsg: "truncated",
 		},
 		{
 			name:    "header and body without trailer",
-			setup:   csearchWriteIndexFile(indexMagic + strings.Repeat("\x00", 64)),
+			setup:   csearchWriteIndexFile(indexFormats[0].magic + strings.Repeat("\x00", 64)),
 			wantMsg: "truncated",
 		},
 		{
 			name:    "header and trailer only",
-			setup:   csearchWriteIndexFile(indexMagic + indexTrailer),
+			setup:   csearchWriteIndexFile(indexFormats[0].magic + indexFormats[0].trailer),
 			wantMsg: "truncated",
+		},
+		// the same for format 2, which has a different trailer
+		{
+			name:    "v2 header only",
+			setup:   csearchWriteIndexFile(indexFormats[1].magic),
+			wantMsg: "truncated",
+		},
+		{
+			name:    "v2 header and body without trailer",
+			setup:   csearchWriteIndexFile(indexFormats[1].magic + strings.Repeat("\x00", 128)),
+			wantMsg: "truncated",
+		},
+		{
+			name:    "v2 header with v1 trailer",
+			setup:   csearchWriteIndexFile(indexFormats[1].magic + strings.Repeat("\x00", 128) + indexFormats[0].trailer),
+			wantMsg: "truncated",
+		},
+		{
+			name:    "format from a newer cindex",
+			setup:   csearchWriteIndexFile("csearch index 9\n" + strings.Repeat("\x00", 128)),
+			wantMsg: `unsupported format version "9"`,
 		},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
@@ -595,8 +618,10 @@ func TestCsearchRootIndex(t *testing.T) {
 	// file system
 	indexFile := filepath.Join(t.TempDir(), "csearchindex")
 	iw := index.Create(indexFile)
-	iw.AddPaths([]string{"/"})
-	iw.AddFile(file)
+	iw.AddRoots([]index.Path{index.MakePath("/")})
+	if err := iw.AddFile(file); err != nil {
+		t.Fatalf("failed to index %q: %v", file, err)
+	}
 	iw.Flush()
 
 	results, err := newCsearchBackend(t, indexFile).Search(context.Background(), "needle", SearchOptions{})
@@ -608,5 +633,26 @@ func TestCsearchRootIndex(t *testing.T) {
 	}
 	if len(results) == 1 && results[0].RepoName != "/" {
 		t.Errorf("got repo %q, want \"/\"", results[0].RepoName)
+	}
+}
+
+// TestCsearchReadsIndexFormat2 pins the format the test indexes are written
+// in: a cindex newer than v1.2.0 writes format 2, which this backend used to
+// reject as "not a codesearch index".
+func TestCsearchReadsIndexFormat2(t *testing.T) {
+	indexFile, _ := newTestIndex(t, map[string]string{"a.go": "needle\n"})
+	data, err := os.ReadFile(indexFile)
+	if err != nil {
+		t.Fatalf("failed to read index: %v", err)
+	}
+	if !strings.HasPrefix(string(data), indexFormats[1].magic) {
+		t.Fatalf("test index starts with %q, want format 2", data[:indexMagicLen])
+	}
+	results, err := newCsearchBackend(t, indexFile).Search(context.Background(), "needle", SearchOptions{})
+	if err != nil {
+		t.Fatalf("search failed: %v", err)
+	}
+	if len(results) != 1 || results[0].Path != "a.go" || results[0].Lineno != 1 {
+		t.Errorf("got %+v, want one result for a.go line 1", results)
 	}
 }

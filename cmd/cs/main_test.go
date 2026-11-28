@@ -1520,9 +1520,11 @@ func newTestIndex(t *testing.T, files map[string]string) (indexFile, root string
 	}
 	indexFile = filepath.Join(t.TempDir(), "csearchindex")
 	iw := index.Create(indexFile)
-	iw.AddPaths([]string{root})
+	iw.AddRoots([]index.Path{index.MakePath(root)})
 	for name := range files {
-		iw.AddFile(filepath.Join(root, name))
+		if err := iw.AddFile(filepath.Join(root, name)); err != nil {
+			t.Fatalf("failed to index %q: %v", name, err)
+		}
 	}
 	iw.Flush()
 	return indexFile, root

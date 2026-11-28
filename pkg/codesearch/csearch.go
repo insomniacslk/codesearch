@@ -114,14 +114,26 @@ func removePathPrefix(s, prefix string) string {
 	return strings.TrimPrefix(strings.TrimPrefix(s, strings.TrimRight(prefix, "/")), "/")
 }
 
-// indexMagic and indexTrailer are the header and trailer cindex writes at the
-// start and end of an index file. Five 4-byte section offsets sit right before
-// the trailer, so no real index is shorter than indexMinSize.
-const (
-	indexMagic   = "csearch index 1\n"
-	indexTrailer = "\ncsearch trailr\n"
-	indexMinSize = len(indexMagic) + 5*4 + len(indexTrailer)
-)
+// indexFormat describes one version of the cindex file format: the header and
+// trailer cindex writes at the start and end of the file, and the size of the
+// section offsets that sit right before the trailer. No real index is shorter
+// than minSize.
+type indexFormat struct {
+	magic   string
+	trailer string
+	minSize int64
+}
+
+// indexMagicLen is the length of the header, the same in every format.
+const indexMagicLen = 16
+
+// indexFormats lists the formats the codesearch library can read. Version 1
+// is written by cindex up to v1.2.0 and has five 4-byte offsets, version 2 by
+// later releases and has eight 8-byte ones.
+var indexFormats = []indexFormat{
+	{magic: "csearch index 1\n", trailer: "\ncsearch trailr\n", minSize: 16 + 5*4 + 16},
+	{magic: "csearch index 2\n", trailer: "\ncsearch trlr 2\n", minSize: 16 + 8*8 + 16},
+}
 
 // openIndex validates the index before handing it to index.Open, which calls
 // log.Fatal on anything it does not like and so would take the whole process
@@ -140,22 +152,44 @@ func openIndex(path string) (*index.Index, error) {
 	}
 	defer func() { _ = f.Close() }()
 
-	header := make([]byte, len(indexMagic))
-	if _, err := io.ReadFull(f, header); err != nil || string(header) != indexMagic {
+	header := make([]byte, indexMagicLen)
+	if _, err := io.ReadFull(f, header); err != nil {
+		return nil, fmt.Errorf("%q is not a codesearch index, recreate it with cindex", path)
+	}
+	var format *indexFormat
+	for i := range indexFormats {
+		if string(header) == indexFormats[i].magic {
+			format = &indexFormats[i]
+		}
+	}
+	if format == nil {
+		if strings.HasPrefix(string(header), "csearch index ") {
+			return nil, fmt.Errorf("index %q has the unsupported format version %q, recreate it with a cindex that this build of cs supports",
+				path, strings.TrimSpace(strings.TrimPrefix(string(header), "csearch index ")))
+		}
 		return nil, fmt.Errorf("%q is not a codesearch index, recreate it with cindex", path)
 	}
 	info, err := f.Stat()
 	if err != nil {
 		return nil, fmt.Errorf("cannot stat index %q: %w", path, err)
 	}
-	if info.Size() < int64(indexMinSize) {
+	if info.Size() < format.minSize {
 		return nil, fmt.Errorf("index %q is truncated, recreate it with cindex", path)
 	}
-	trailer := make([]byte, len(indexTrailer))
-	if _, err := f.ReadAt(trailer, info.Size()-int64(len(indexTrailer))); err != nil || string(trailer) != indexTrailer {
+	trailer := make([]byte, len(format.trailer))
+	if _, err := f.ReadAt(trailer, info.Size()-int64(len(trailer))); err != nil || string(trailer) != format.trailer {
 		return nil, fmt.Errorf("index %q is truncated, recreate it with cindex", path)
 	}
 	return index.Open(path), nil
+}
+
+// indexRoots returns the directories that were passed to cindex.
+func indexRoots(ix *index.Index) []string {
+	var roots []string
+	for p := range ix.Roots().All() {
+		roots = append(roots, p.String())
+	}
+	return roots
 }
 
 func (g *Csearch) Search(ctx context.Context, searchString string, opts SearchOptions) (Results, error) {
@@ -178,7 +212,7 @@ func (g *Csearch) Search(ctx context.Context, searchString string, opts SearchOp
 			return nil, fmt.Errorf("failed to compile pattern for indexing: %w", err)
 		}
 		var results Results
-		for _, indexedPath := range ix.Paths() {
+		for _, indexedPath := range indexRoots(ix) {
 			// results are appended as the walk visits them, which is lexical
 			// order, so that --limit picks the same subset on every run
 			err = filepath.Walk(indexedPath, func(path string, info os.FileInfo, err error) error {
@@ -239,8 +273,9 @@ func (g *Csearch) Search(ctx context.Context, searchString string, opts SearchOp
 	return g.toResult(ctx, pattern, ix, grep, post, opts)
 }
 
-func (g *Csearch) toResult(ctx context.Context, pattern string, ix *index.Index, grep regexp.Grep, post []uint32, opts SearchOptions) (Results, error) {
+func (g *Csearch) toResult(ctx context.Context, pattern string, ix *index.Index, grep regexp.Grep, post []int, opts SearchOptions) (Results, error) {
 	var results Results
+	roots := indexRoots(ix)
 	re, err := goregexp.Compile(pattern)
 	if err != nil {
 		return nil, fmt.Errorf("failed to compile pattern for indexing: %w", err)
@@ -252,7 +287,7 @@ func (g *Csearch) toResult(ctx context.Context, pattern string, ix *index.Index,
 		if opts.Limit > 0 && uint(len(results)) >= opts.Limit {
 			break
 		}
-		name := ix.Name(fileid)
+		name := ix.Name(fileid).String()
 		logrus.Debugf("fileid=%d name=%q", fileid, name)
 		grep.File(name)
 		b := grep.Stdout.(*bytes.Buffer)
@@ -276,7 +311,7 @@ func (g *Csearch) toResult(ctx context.Context, pattern string, ix *index.Index,
 		// find the indexed path this file sits under, preferring the
 		// longest match so nested indexed roots resolve to the deeper one
 		var indexedPath string
-		for _, p := range ix.Paths() {
+		for _, p := range roots {
 			if hasPathPrefix(name, p) && len(p) > len(indexedPath) {
 				indexedPath = p
 			}
