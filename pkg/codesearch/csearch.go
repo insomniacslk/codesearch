@@ -403,6 +403,9 @@ func (g *Csearch) toResult(ctx context.Context, pattern string, ix *index.Index,
 			logrus.Warn(job.warning)
 		}
 		results = append(results, job.results...)
+		for _, r := range job.results {
+			opts.emit(r)
+		}
 	}
 	if err := ctx.Err(); err != nil {
 		return nil, err

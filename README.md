@@ -102,6 +102,17 @@ uses its output, which lets the secret live in a password manager:
       token_command: pass show github/codesearch
 ```
 
+## Output while the search runs
+
+`cs` prints results while the search is still running, so a long search shows
+its first results early. The output is the same as when everything is printed at
+the end: the results of the first backend are printed as they arrive, and the
+results of each later backend are held back until the backends before it are
+done. A backend that fails part way through keeps the results it already printed.
+
+`--json`, `--sort` and `-F` need every result before they can print the first
+one, so they still print at the end.
+
 ## GitHub file cache
 
 The GitHub backend downloads every file that has a match, to show line numbers

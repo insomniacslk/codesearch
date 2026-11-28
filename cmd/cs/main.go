@@ -15,6 +15,7 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -455,6 +456,8 @@ type searchOutcome struct {
 	backend  codesearch.Backend
 	results  codesearch.Results
 	selected []*codesearch.Result
+	// shown is how many results were printed
+	shown    int
 	duration time.Duration
 	err      error
 }
@@ -464,6 +467,12 @@ type searchOutcome struct {
 // are returned in the order the backends were given, not the order they
 // finished, so the output stays stable across runs.
 func runSearches(ctx context.Context, backends []codesearch.Backend, searchString string, opts codesearch.SearchOptions) []searchOutcome {
+	return runSearchesLive(ctx, backends, searchString, opts, nil)
+}
+
+// runSearchesLive is runSearches that also prints the results through live
+// while the searches run, if live is not nil.
+func runSearchesLive(ctx context.Context, backends []codesearch.Backend, searchString string, opts codesearch.SearchOptions, live *livePrinter) []searchOutcome {
 	type indexed struct {
 		idx     int
 		outcome searchOutcome
@@ -472,7 +481,14 @@ func runSearches(ctx context.Context, backends []codesearch.Backend, searchStrin
 	for idx, b := range backends {
 		go func(idx int, b codesearch.Backend) {
 			start := time.Now()
+			opts := opts
+			if live != nil {
+				opts.OnResult = live.streams[idx].add
+			}
 			results, err := b.Search(ctx, searchString, opts)
+			if live != nil {
+				live.finish(idx, results)
+			}
 			if err != nil {
 				// reported once, in the summary at the end
 				logrus.Debugf("Backend %q failed: %v", b.Name(), err)
@@ -490,7 +506,193 @@ func runSearches(ctx context.Context, backends []codesearch.Backend, searchStrin
 		r := <-ch
 		outcomes[r.idx] = r.outcome
 	}
+	if live != nil {
+		// the summary on stderr comes after the last result
+		live.close()
+	}
 	return outcomes
+}
+
+// liveStream prints the results of one backend. It applies the same selection
+// as selectResults, one result at a time.
+type liveStream struct {
+	mu            sync.Mutex
+	out           *liveWriter
+	limit         uint
+	matchFilename *regexp.Regexp
+	// live says the results go straight to w; otherwise they wait in pending
+	// for the backends before this one to finish
+	live    bool
+	pending []codesearch.Result
+	// received counts the results the backend passed on while it searched
+	received int
+	shown    int
+}
+
+// add takes the next result of the backend. It is the backend's OnResult.
+func (s *liveStream) add(res codesearch.Result) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.received++
+	s.take(res)
+}
+
+func (s *liveStream) take(res codesearch.Result) {
+	if res.IsFilename {
+		return
+	}
+	if s.matchFilename != nil && !s.matchFilename.MatchString(res.Path) {
+		return
+	}
+	if s.limit > 0 && uint(s.shown) >= s.limit {
+		return
+	}
+	s.shown++
+	if s.live {
+		s.out.put(res)
+		return
+	}
+	s.pending = append(s.pending, res)
+}
+
+// finish takes the results that Search returned. A backend may pass on all,
+// some or none of its results while it searches; what it did not pass on is
+// the rest of what it returns.
+func (s *liveStream) finish(results codesearch.Results) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for i := s.received; i < len(results); i++ {
+		s.take(results[i])
+	}
+}
+
+// goLive prints what has been waiting and lets later results through.
+func (s *liveStream) goLive() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, res := range s.pending {
+		s.out.put(res)
+	}
+	s.pending = nil
+	s.live = true
+}
+
+// liveWriter prints results from a goroutine of its own. The backends hand
+// their results over without waiting for the output: stdout can be slow, or
+// stand still for as long as a pager is not scrolled, and a search that waited
+// for it would run into --timeout through no fault of the backend.
+type liveWriter struct {
+	w      io.Writer
+	mu     sync.Mutex
+	wake   *sync.Cond
+	queue  []codesearch.Result
+	closed bool
+	done   chan struct{}
+}
+
+func newLiveWriter(w io.Writer) *liveWriter {
+	q := &liveWriter{w: w, done: make(chan struct{})}
+	q.wake = sync.NewCond(&q.mu)
+	go q.run()
+	return q
+}
+
+// put queues a result for printing. It does not block on the output.
+func (q *liveWriter) put(res codesearch.Result) {
+	q.mu.Lock()
+	q.queue = append(q.queue, res)
+	q.mu.Unlock()
+	q.wake.Signal()
+}
+
+// close prints what is still queued and stops the goroutine.
+func (q *liveWriter) close() {
+	q.mu.Lock()
+	q.closed = true
+	q.mu.Unlock()
+	q.wake.Signal()
+	<-q.done
+}
+
+func (q *liveWriter) run() {
+	defer close(q.done)
+	for {
+		q.mu.Lock()
+		for len(q.queue) == 0 && !q.closed {
+			q.wake.Wait()
+		}
+		batch := q.queue
+		q.queue = nil
+		q.mu.Unlock()
+		if len(batch) == 0 {
+			// closed, and nothing left
+			return
+		}
+		for i := range batch {
+			printResult(q.w, &batch[i], false)
+		}
+	}
+}
+
+// livePrinter prints results while the searches are still running, instead
+// of after the slowest backend is done. The output is the same as printing
+// everything at the end: the results of the first backend are printed as they
+// arrive, and those of each later backend are held back until every backend
+// before it has finished.
+type livePrinter struct {
+	out     *liveWriter
+	streams []*liveStream
+	mu      sync.Mutex
+	done    []bool
+	// head is the backend whose results are being printed
+	head int
+}
+
+func newLivePrinter(w io.Writer, backends int, limit uint, matchFilename *regexp.Regexp) *livePrinter {
+	p := &livePrinter{out: newLiveWriter(w), done: make([]bool, backends)}
+	for range backends {
+		p.streams = append(p.streams, &liveStream{out: p.out, limit: limit, matchFilename: matchFilename})
+	}
+	if backends > 0 {
+		p.streams[0].goLive()
+	}
+	return p
+}
+
+// finish records that a backend is done, with the results it returned, and
+// moves on to the next backend that is not.
+func (p *livePrinter) finish(idx int, results codesearch.Results) {
+	p.streams[idx].finish(results)
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.done[idx] = true
+	for p.head < len(p.streams) && p.done[p.head] {
+		p.head++
+		if p.head < len(p.streams) {
+			p.streams[p.head].goLive()
+		}
+	}
+}
+
+// close waits until every result is on the output. No result may be added
+// after it.
+func (p *livePrinter) close() {
+	p.out.close()
+}
+
+// shown returns how many results of a backend were printed.
+func (p *livePrinter) shown(idx int) int {
+	s := p.streams[idx]
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.shown
+}
+
+// canPrintLive reports whether results can be printed before the search is
+// over. JSON is one document, --sort needs every result before it knows the
+// first one, and -F deduplicates and sorts.
+func canPrintLive() bool {
+	return !flagJSON && flagSort == "" && !flagSearchInFilenames
 }
 
 func failedSearches(outcomes []searchOutcome) []searchOutcome {
@@ -721,17 +923,28 @@ func runSearch(ctx context.Context, config *codesearch.Config, args []string, st
 	}
 
 	searchStart := time.Now()
-	outcomes := runSearches(ctx, backends, searchString, codesearch.SearchOptions{
+	var live *livePrinter
+	if canPrintLive() {
+		live = newLivePrinter(stdout, len(backends), flagLimit, matchFilename)
+	}
+	outcomes := runSearchesLive(ctx, backends, searchString, codesearch.SearchOptions{
 		LinesBefore:       flagSearchContextBefore,
 		LinesAfter:        flagSearchContextAfter,
 		CaseInsensitive:   flagCaseInsensitive,
 		SearchInFilenames: flagSearchInFilenames,
 		Timeout:           flagTimeout,
 		Limit:             backendLimit(),
-	})
+	}, live)
 	totalResults := 0
 	for i := range outcomes {
 		o := &outcomes[i]
+		if live != nil {
+			// already printed, and that includes what a backend found
+			// before it failed
+			o.shown = live.shown(i)
+			totalResults += o.shown
+			continue
+		}
 		if o.err != nil {
 			continue
 		}
@@ -742,7 +955,8 @@ func runSearch(ctx context.Context, config *codesearch.Config, args []string, st
 		} else {
 			o.selected = selectResults(results, flagLimit, matchFilename)
 		}
-		totalResults += len(o.selected)
+		o.shown = len(o.selected)
+		totalResults += o.shown
 	}
 	totalTime := time.Since(searchStart)
 
@@ -750,7 +964,7 @@ func runSearch(ctx context.Context, config *codesearch.Config, args []string, st
 		if err := writeJSON(stdout, outcomes, totalResults, totalTime); err != nil {
 			return fmt.Errorf("failed to write JSON output: %w", err)
 		}
-	} else {
+	} else if live == nil {
 		for _, o := range outcomes {
 			for _, res := range o.selected {
 				printResult(stdout, res, flagSearchInFilenames)
@@ -763,7 +977,7 @@ func runSearch(ctx context.Context, config *codesearch.Config, args []string, st
 				_, _ = fmt.Fprintf(stderr, "Failed on %q after %s\n", o.backend.Name(), o.duration)
 				continue
 			}
-			_, _ = fmt.Fprintf(stderr, "Got %d results on %q in %s\n", len(o.selected), o.backend.Name(), o.duration)
+			_, _ = fmt.Fprintf(stderr, "Got %d results on %q in %s\n", o.shown, o.backend.Name(), o.duration)
 		}
 	}
 	_, _ = fmt.Fprintf(stderr, "Got %d total results in %s\n", totalResults, totalTime)

@@ -35,6 +35,20 @@ type SearchOptions struct {
 	// that quota for nothing. Only the caller knows whether truncating early
 	// is safe, so it is opt-in rather than derived from the printed limit.
 	Limit uint
+	// OnResult, if set, is called with each result as soon as the backend
+	// has it, so that a caller can show results while a long search is still
+	// running. It is optional for a backend to call it. One that does calls
+	// it from a single goroutine, in the order of the results that Search
+	// then returns, of which the results passed to OnResult are a prefix.
+	// When Search fails, the results already passed on stay valid.
+	OnResult func(Result)
+}
+
+// emit passes a result to OnResult, if there is one.
+func (o SearchOptions) emit(r Result) {
+	if o.OnResult != nil {
+		o.OnResult(r)
+	}
 }
 
 type Backend interface {
