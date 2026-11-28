@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sync"
+	"time"
 
 	"github.com/sirupsen/logrus"
 )
@@ -18,16 +20,21 @@ import (
 // A nil *githubCache is valid and caches nothing.
 type githubCache struct {
 	dir string
+	// sweep removes what an interrupted cs left behind, once per process
+	sweep sync.Once
 }
 
 // newGithubCache returns the cache configured by the cache_dir parameter:
 // absent means the default location in the user's cache directory, an empty
 // string turns the cache off.
 func newGithubCache(params BackendParams) (*githubCache, error) {
-	if raw := params.Get("cache_dir"); raw != nil {
+	if raw, present := params["cache_dir"]; present {
 		dir, ok := raw.(string)
 		if !ok {
-			return nil, fmt.Errorf("parameter 'cache_dir' must be a path, got %T", raw)
+			// this includes `cache_dir:` with no value, which YAML reads as
+			// null: it could mean "the default" or "none", so say so rather
+			// than pick one
+			return nil, fmt.Errorf(`parameter 'cache_dir' must be a path, or "" to turn the cache off, got %v`, raw)
 		}
 		if dir == "" {
 			return nil, nil
@@ -103,15 +110,38 @@ func (c *githubCache) store(text string) {
 	}
 }
 
-func (c *githubCache) write(path, text string) error {
-	dir := filepath.Dir(path)
-	// source code from private repositories ends up here
-	if err := os.MkdirAll(dir, 0o700); err != nil {
-		return err
+// githubCacheTmpAge is how old a temporary file must be before it is taken
+// for the leftover of an interrupted cs rather than the work of a running one.
+const githubCacheTmpAge = time.Hour
+
+// sweepTmp removes temporary files that were never renamed into place,
+// because cs was interrupted between writing and renaming them.
+func (c *githubCache) sweepTmp(tmpDir string) {
+	entries, err := os.ReadDir(tmpDir)
+	if err != nil {
+		return
 	}
+	for _, e := range entries {
+		if info, err := e.Info(); err == nil && time.Since(info.ModTime()) > githubCacheTmpAge {
+			_ = os.Remove(filepath.Join(tmpDir, e.Name()))
+		}
+	}
+}
+
+func (c *githubCache) write(path, text string) error {
+	// source code from private repositories ends up here
+	tmpDir := filepath.Join(c.dir, "tmp")
+	for _, dir := range []string{filepath.Dir(path), tmpDir} {
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			return err
+		}
+	}
+	c.sweep.Do(func() { c.sweepTmp(tmpDir) })
 	// write to a temporary file and rename it, so that a concurrent cs or a
-	// crash never leaves a partial entry under the final name
-	tmp, err := os.CreateTemp(dir, "tmp-*")
+	// crash never leaves a partial entry under the final name. The temporary
+	// files have a directory of their own, in the same file system, so that
+	// the leftovers can be found again.
+	tmp, err := os.CreateTemp(tmpDir, "blob-*")
 	if err != nil {
 		return err
 	}

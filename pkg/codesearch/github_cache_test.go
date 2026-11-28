@@ -10,6 +10,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 )
 
 // TestGitBlobSHA checks the hash against values from `git hash-object`.
@@ -167,9 +168,49 @@ func TestGithubCacheEntryPermissions(t *testing.T) {
 			t.Errorf("%q has mode %o, want no access for group and others", p, perm)
 		}
 	}
-	entries, err := os.ReadDir(filepath.Join(c.dir, sha[:2]))
-	if err != nil || len(entries) != 1 {
-		t.Errorf("got %d entries (%v), want 1: no temporary file may stay behind", len(entries), err)
+	for _, dir := range []string{filepath.Join(c.dir, sha[:2]), filepath.Join(c.dir, "tmp")} {
+		entries, err := os.ReadDir(dir)
+		want := 1
+		if filepath.Base(dir) == "tmp" {
+			want = 0
+		}
+		if err != nil || len(entries) != want {
+			t.Errorf("got %d entries in %q (%v), want %d: no temporary file may stay behind", len(entries), dir, err, want)
+		}
+	}
+}
+
+// TestGithubCacheSweepsLeftovers: a cs that is interrupted between writing a
+// temporary file and renaming it leaves that file behind. The next cs that
+// writes to the cache removes it, but not a file young enough to belong to a
+// cs that is still running.
+func TestGithubCacheSweepsLeftovers(t *testing.T) {
+	dir := t.TempDir()
+	tmpDir := filepath.Join(dir, "tmp")
+	if err := os.MkdirAll(tmpDir, 0o700); err != nil {
+		t.Fatalf("failed to create: %v", err)
+	}
+	old, young := filepath.Join(tmpDir, "blob-old"), filepath.Join(tmpDir, "blob-young")
+	for _, p := range []string{old, young} {
+		if err := os.WriteFile(p, []byte("partial"), 0o600); err != nil {
+			t.Fatalf("failed to write: %v", err)
+		}
+	}
+	past := time.Now().Add(-2 * githubCacheTmpAge)
+	if err := os.Chtimes(old, past, past); err != nil {
+		t.Fatalf("failed to age the file: %v", err)
+	}
+
+	c := &githubCache{dir: dir}
+	c.store("content\n")
+	if _, err := os.Stat(old); !os.IsNotExist(err) {
+		t.Errorf("the old leftover is still there (%v), want it removed", err)
+	}
+	if _, err := os.Stat(young); err != nil {
+		t.Errorf("the young temporary file is gone (%v), want it kept", err)
+	}
+	if _, ok := c.load(gitBlobSHA("content\n")); !ok {
+		t.Error("the stored entry cannot be loaded")
 	}
 }
 
@@ -191,8 +232,11 @@ func TestGithubCacheRejectsBadSHA(t *testing.T) {
 
 // TestGithubCacheDirParam covers the parameter itself.
 func TestGithubCacheDirParam(t *testing.T) {
-	if _, err := newGithubCache(BackendParams{"cache_dir": 42}); err == nil {
-		t.Error("got nil error for a numeric cache_dir, want a failure")
+	// nil is what YAML gives for `cache_dir:` with no value
+	for _, bad := range []any{42, nil} {
+		if _, err := newGithubCache(BackendParams{"cache_dir": bad}); err == nil {
+			t.Errorf("got nil error for cache_dir %v, want a failure", bad)
+		}
 	}
 	t.Setenv("XDG_CACHE_HOME", "/xdg")
 	c, err := newGithubCache(BackendParams{})
