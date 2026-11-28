@@ -13,6 +13,8 @@ import (
 	"time"
 
 	"github.com/google/codesearch/index"
+	"github.com/sirupsen/logrus"
+	logrustest "github.com/sirupsen/logrus/hooks/test"
 )
 
 // TestContextLinesNeverPanics covers the regression where the after-context
@@ -767,5 +769,103 @@ func TestCsearchCorruptSectionOffsets(t *testing.T) {
 	// the untouched index still opens
 	if _, err := newCsearchBackend(t, csearchWriteIndexFile(string(good))(t)).Search(context.Background(), "needle", SearchOptions{}); err != nil {
 		t.Errorf("the valid index failed: %v", err)
+	}
+}
+
+// format1Index is a committed index in format 1, see testdata/README.md.
+const format1Index = "testdata/index-format-1"
+
+// TestCsearchFormat1Fixture guards the fixture itself.
+func TestCsearchFormat1Fixture(t *testing.T) {
+	data, err := os.ReadFile(format1Index)
+	if err != nil {
+		t.Fatalf("failed to read fixture: %v", err)
+	}
+	if !strings.HasPrefix(string(data), indexFormats[0].magic) || !strings.HasSuffix(string(data), indexFormats[0].trailer) {
+		t.Fatal("the fixture is not a format 1 index")
+	}
+}
+
+// TestCsearchFormat1Filenames: the roots and the names of a format 1 index
+// are read correctly.
+func TestCsearchFormat1Filenames(t *testing.T) {
+	b := newCsearchBackend(t, format1Index)
+	for _, tt := range []struct {
+		pattern string
+		want    []string
+	}{
+		{`.`, []string{"cmd/main.go", "lib/haystack.go", "lib/needle.go"}},
+		{`^lib/`, []string{"lib/haystack.go", "lib/needle.go"}},
+		{`needle`, []string{"lib/needle.go"}},
+		{`\.md$`, nil},
+	} {
+		results, err := b.Search(context.Background(), tt.pattern, SearchOptions{SearchInFilenames: true})
+		if err != nil {
+			t.Fatalf("%q: search failed: %v", tt.pattern, err)
+		}
+		if got := resultPaths(results); !equalLines(got, tt.want) {
+			t.Errorf("%q: got %q, want %q", tt.pattern, got, tt.want)
+		}
+		for _, r := range results {
+			if r.RepoName != "/fixture" || r.FileURL != "file:///fixture/"+r.Path {
+				t.Errorf("%q: got %+v, want a file under /fixture", tt.pattern, r)
+			}
+		}
+	}
+}
+
+// TestCsearchFormat1PostingLists: the posting lists of a format 1 index pick
+// the right candidate files. The files of the fixture do not exist, so every
+// candidate ends as a "skipping" warning, and the warnings say which files
+// the index proposed.
+func TestCsearchFormat1PostingLists(t *testing.T) {
+	b := newCsearchBackend(t, format1Index)
+	for _, tt := range []struct {
+		pattern string
+		want    []string
+	}{
+		{"needle", []string{"/fixture/cmd/main.go", "/fixture/lib/needle.go"}},
+		{"nothing to find", []string{"/fixture/lib/haystack.go"}},
+		{"package", []string{"/fixture/cmd/main.go", "/fixture/lib/haystack.go", "/fixture/lib/needle.go"}},
+		{"absent from every file", nil},
+	} {
+		hook := logrustest.NewGlobal()
+		results, err := b.Search(context.Background(), tt.pattern, SearchOptions{})
+		logrus.StandardLogger().ReplaceHooks(make(logrus.LevelHooks))
+		if err != nil {
+			t.Fatalf("%q: search failed: %v", tt.pattern, err)
+		}
+		if len(results) != 0 {
+			t.Errorf("%q: got %d results for files that do not exist", tt.pattern, len(results))
+		}
+		var candidates []string
+		for _, e := range hook.AllEntries() {
+			if name, ok := strings.CutPrefix(e.Message, `Skipping "`); ok && e.Level == logrus.WarnLevel {
+				candidates = append(candidates, name[:strings.Index(name, `"`)])
+			}
+		}
+		if !equalLines(candidates, tt.want) {
+			t.Errorf("%q: index proposed %q, want %q", tt.pattern, candidates, tt.want)
+		}
+	}
+}
+
+// TestCsearchFormat1CorruptOffsets: the section table check on a real format
+// 1 index, where the offsets are 4 bytes each.
+func TestCsearchFormat1CorruptOffsets(t *testing.T) {
+	good, err := os.ReadFile(format1Index)
+	if err != nil {
+		t.Fatalf("failed to read fixture: %v", err)
+	}
+	v1 := indexFormats[0]
+	tableStart := len(good) - len(v1.trailer) - v1.fields*v1.fieldSize
+	for field := range v1.fields {
+		data := append([]byte(nil), good...)
+		binary.BigEndian.PutUint32(data[tableStart+field*4:], uint32(len(good))+7)
+		path := csearchWriteIndexFile(string(data))(t)
+		_, err := newCsearchBackend(t, path).Search(context.Background(), "needle", SearchOptions{})
+		if err == nil || !strings.Contains(err.Error(), "corrupt") {
+			t.Errorf("field %d: got error %v, want the index reported as corrupt", field, err)
+		}
 	}
 }
