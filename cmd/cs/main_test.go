@@ -23,30 +23,20 @@ import (
 	"github.com/spf13/viper"
 )
 
-// resetConfigState returns the package-level flag and config state to the
-// values a fresh process would start with. The config plumbing is built on
-// globals and on viper's singleton, so every test has to start from a known
-// state.
+// resetConfigState returns the state that is still global to the values a
+// fresh process would start with: viper's singleton, the loaded config and the
+// cobra flags, whose values and Changed marks survive from one Execute to the
+// next.
 func resetConfigState(t *testing.T) {
 	t.Helper()
 	viper.Reset()
 	globalConfig = codesearch.Config{}
-	configFile = ""
-	flagDebug = false
-	flagStats = false
-	flagLimit = 0
-	flagSort = ""
-	flagSearchContextBefore = 0
-	flagSearchContextAfter = 0
-	flagSearchContext = 0
-	flagCaseInsensitive = false
-	flagSearchInFilenames = false
-	flagMatchFilename = ""
-	flagTimeout = 0
-	flagJSON = false
-	searchBackends = ""
 
+	names := []string{"config", "backends"}
 	for name := range flagToConfigKey {
+		names = append(names, name)
+	}
+	for _, name := range names {
 		f := rootCmd.PersistentFlags().Lookup(name)
 		if f == nil {
 			f = searchCmd.PersistentFlags().Lookup(name)
@@ -82,7 +72,7 @@ func useConfigDir(t *testing.T, dir string) {
 
 	// whichever rule applies, the search path has to land inside dir, or the
 	// test is silently reading the real user's configuration
-	if got := configPath(); !strings.HasPrefix(got, dir) {
+	if got := configPath(""); !strings.HasPrefix(got, dir) {
 		t.Fatalf("config path %q is outside the test directory %q", got, dir)
 	}
 }
@@ -116,9 +106,9 @@ backends:
 // path but never read, unmarshalled or validated it, leaving an empty config.
 func TestConfigFileFlagIsRead(t *testing.T) {
 	resetConfigState(t)
-	configFile = writeConfig(t, testConfig)
+	configFile := writeConfig(t, testConfig)
 
-	if err := loadConfig(); err != nil {
+	if _, err := loadConfig(configFile); err != nil {
 		t.Fatalf("failed to load config: %v", err)
 	}
 
@@ -143,7 +133,7 @@ func TestConfigFileFlagIsRead(t *testing.T) {
 
 func TestConfigFileValuesApplied(t *testing.T) {
 	resetConfigState(t)
-	configFile = writeConfig(t, testConfig+`
+	configFile := writeConfig(t, testConfig+`
 stats: true
 defaults:
   limit: 5
@@ -154,36 +144,37 @@ defaults:
   match_filename: "*.go"
 `)
 
-	if err := loadConfig(); err != nil {
+	s, err := loadConfig(configFile)
+	if err != nil {
 		t.Fatalf("failed to load config: %v", err)
 	}
 
-	if !flagStats {
+	if !s.stats {
 		t.Error("stats: got false, want true")
 	}
-	if got, want := flagLimit, uint(5); got != want {
+	if got, want := s.limit, uint(5); got != want {
 		t.Errorf("limit: got %d, want %d", got, want)
 	}
-	if got, want := flagSort, "z-a"; got != want {
+	if got, want := s.sort, "z-a"; got != want {
 		t.Errorf("sort: got %q, want %q", got, want)
 	}
-	if got, want := flagSearchContextBefore, 2; got != want {
+	if got, want := s.linesBefore, 2; got != want {
 		t.Errorf("before: got %d, want %d", got, want)
 	}
-	if got, want := flagSearchContextAfter, 3; got != want {
+	if got, want := s.linesAfter, 3; got != want {
 		t.Errorf("after: got %d, want %d", got, want)
 	}
-	if !flagCaseInsensitive {
+	if !s.caseInsensitive {
 		t.Error("case_insensitive: got false, want true")
 	}
-	if got, want := flagMatchFilename, "*.go"; got != want {
+	if got, want := s.matchFilename, "*.go"; got != want {
 		t.Errorf("match_filename: got %q, want %q", got, want)
 	}
 }
 
 func TestCommandLineOverridesConfigFile(t *testing.T) {
 	resetConfigState(t)
-	configFile = writeConfig(t, testConfig+`
+	configFile := writeConfig(t, testConfig+`
 defaults:
   limit: 5
   sort: z-a
@@ -192,37 +183,39 @@ defaults:
 	setFlag(t, "limit", "10")
 	setFlag(t, "sort", "a-z")
 
-	if err := loadConfig(); err != nil {
+	s, err := loadConfig(configFile)
+	if err != nil {
 		t.Fatalf("failed to load config: %v", err)
 	}
 
-	if got, want := flagLimit, uint(10); got != want {
+	if got, want := s.limit, uint(10); got != want {
 		t.Errorf("limit: got %d, want %d", got, want)
 	}
-	if got, want := flagSort, "a-z"; got != want {
+	if got, want := s.sort, "a-z"; got != want {
 		t.Errorf("sort: got %q, want %q", got, want)
 	}
 	// not overridden on the command line, so the config file still wins
-	if got, want := flagSearchContextBefore, 2; got != want {
+	if got, want := s.linesBefore, 2; got != want {
 		t.Errorf("before: got %d, want %d", got, want)
 	}
 }
 
 func TestFlagDefaultsWhenAbsentEverywhere(t *testing.T) {
 	resetConfigState(t)
-	configFile = writeConfig(t, testConfig)
+	configFile := writeConfig(t, testConfig)
 
-	if err := loadConfig(); err != nil {
+	s, err := loadConfig(configFile)
+	if err != nil {
 		t.Fatalf("failed to load config: %v", err)
 	}
 
-	if got, want := flagLimit, uint(0); got != want {
+	if got, want := s.limit, uint(0); got != want {
 		t.Errorf("limit: got %d, want %d", got, want)
 	}
-	if got, want := flagSort, ""; got != want {
+	if got, want := s.sort, ""; got != want {
 		t.Errorf("sort: got %q, want %q", got, want)
 	}
-	if flagCaseInsensitive {
+	if s.caseInsensitive {
 		t.Error("case_insensitive: got true, want false")
 	}
 }
@@ -479,14 +472,10 @@ func TestCheckCapabilities(t *testing.T) {
 }
 
 func TestRequestedCapabilities(t *testing.T) {
-	defer func() { flagCaseInsensitive, flagSearchInFilenames = false, false }()
-
-	flagCaseInsensitive, flagSearchInFilenames = false, false
-	if got := requestedCapabilities(); len(got) != 0 {
+	if got := requestedCapabilities(settings{}); len(got) != 0 {
 		t.Errorf("got %v, want none", got)
 	}
-	flagCaseInsensitive, flagSearchInFilenames = true, true
-	if got := requestedCapabilities(); len(got) != 2 {
+	if got := requestedCapabilities(settings{caseInsensitive: true, searchInFilenames: true}); len(got) != 2 {
 		t.Errorf("got %v, want two capabilities", got)
 	}
 }
@@ -1029,20 +1018,21 @@ func TestContextFlag(t *testing.T) {
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			resetConfigState(t)
-			configFile = writeConfig(t, testConfig+tt.config)
+			configFile := writeConfig(t, testConfig+tt.config)
 			for name, value := range tt.flags {
 				setFlag(t, name, value)
 			}
 
-			if err := loadConfig(); err != nil {
+			s, err := loadConfig(configFile)
+			if err != nil {
 				t.Fatalf("failed to load config: %v", err)
 			}
 
-			if flagSearchContextBefore != tt.wantBefore {
-				t.Errorf("before: got %d, want %d", flagSearchContextBefore, tt.wantBefore)
+			if s.linesBefore != tt.wantBefore {
+				t.Errorf("before: got %d, want %d", s.linesBefore, tt.wantBefore)
 			}
-			if flagSearchContextAfter != tt.wantAfter {
-				t.Errorf("after: got %d, want %d", flagSearchContextAfter, tt.wantAfter)
+			if s.linesAfter != tt.wantAfter {
+				t.Errorf("after: got %d, want %d", s.linesAfter, tt.wantAfter)
 			}
 		})
 	}
@@ -1103,8 +1093,8 @@ func TestConfigExampleOutputIsUsable(t *testing.T) {
 	}
 
 	resetConfigState(t)
-	configFile = writeConfig(t, out)
-	if err := loadConfig(); err != nil {
+	configFile := writeConfig(t, out)
+	if _, err := loadConfig(configFile); err != nil {
 		t.Fatalf("the example config does not load: %v", err)
 	}
 	if len(getConfig().Backends) == 0 {
@@ -1139,8 +1129,8 @@ func TestCommandsNeedingConfigReportItHelpfully(t *testing.T) {
 func TestLoadConfigErrorsAreDescriptive(t *testing.T) {
 	t.Run("malformed yaml", func(t *testing.T) {
 		resetConfigState(t)
-		configFile = writeConfig(t, "default_backends: [oops\n  bad indent:\n")
-		err := loadConfig()
+		configFile := writeConfig(t, "default_backends: [oops\n  bad indent:\n")
+		_, err := loadConfig(configFile)
 		if err == nil {
 			t.Fatal("got nil error, want a failure")
 		}
@@ -1150,8 +1140,8 @@ func TestLoadConfigErrorsAreDescriptive(t *testing.T) {
 	})
 	t.Run("invalid config", func(t *testing.T) {
 		resetConfigState(t)
-		configFile = writeConfig(t, "default_backends: [nosuchbackend]\nbackends: {}\n")
-		err := loadConfig()
+		configFile := writeConfig(t, "default_backends: [nosuchbackend]\nbackends: {}\n")
+		_, err := loadConfig(configFile)
 		if err == nil {
 			t.Fatal("got nil error, want a failure")
 		}
@@ -1182,15 +1172,13 @@ func TestBackendLimitOnlyPushedDownWhenSafe(t *testing.T) {
 		{name: "sort and filter together", limit: 10, sort: "z-a", matchFilename: "x", want: 0},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
-			defer func() {
-				flagLimit, flagSort, flagMatchFilename, flagSearchInFilenames = 0, "", "", false
-			}()
-			flagLimit = tt.limit
-			flagSort = tt.sort
-			flagMatchFilename = tt.matchFilename
-			flagSearchInFilenames = tt.searchInFilenames
-
-			if got := backendLimit(); got != tt.want {
+			s := settings{
+				limit:             tt.limit,
+				sort:              tt.sort,
+				matchFilename:     tt.matchFilename,
+				searchInFilenames: tt.searchInFilenames,
+			}
+			if got := backendLimit(s); got != tt.want {
 				t.Errorf("got %d, want %d", got, tt.want)
 			}
 		})
@@ -1213,7 +1201,7 @@ func TestLimitedSearchStillHonoursThePrintedLimit(t *testing.T) {
 // matched the same name written in default_backends or passed to -b.
 func TestMixedCaseBackendNames(t *testing.T) {
 	resetConfigState(t)
-	configFile = writeConfig(t, `
+	configFile := writeConfig(t, `
 default_backends: [GitHub_Me]
 backends:
   GitHub_Me:
@@ -1221,7 +1209,7 @@ backends:
     params:
       index_file: /tmp/index
 `)
-	if err := loadConfig(); err != nil {
+	if _, err := loadConfig(configFile); err != nil {
 		t.Fatalf("failed to load config: %v", err)
 	}
 	for _, requested := range []string{"GitHub_Me", "github_me", "GITHUB_ME"} {
@@ -1367,11 +1355,11 @@ func TestNegativeValuesRejected(t *testing.T) {
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			resetConfigState(t)
-			configFile = writeConfig(t, testConfig+tt.config)
-			err := loadConfig()
+			configFile := writeConfig(t, testConfig+tt.config)
+			s, err := loadConfig(configFile)
 			if err == nil {
 				t.Fatalf("got nil error, want a failure (limit=%d before=%d after=%d)",
-					flagLimit, flagSearchContextBefore, flagSearchContextAfter)
+					s.limit, s.linesBefore, s.linesAfter)
 			}
 			if !strings.Contains(err.Error(), tt.want) {
 				t.Errorf("error %q does not name %s", err, tt.want)
@@ -1409,12 +1397,13 @@ func TestEnvironmentVariables(t *testing.T) {
 		t.Setenv("DEBUG", "1")
 		t.Setenv("STATS", "1")
 		t.Setenv("DEFAULTS_LIMIT", "3")
-		configFile = writeConfig(t, testConfig)
-		if err := loadConfig(); err != nil {
+		configFile := writeConfig(t, testConfig)
+		s, err := loadConfig(configFile)
+		if err != nil {
 			t.Fatalf("failed to load config: %v", err)
 		}
-		if flagDebug || flagStats || flagLimit != 0 {
-			t.Errorf("got debug=%v stats=%v limit=%d, want them untouched", flagDebug, flagStats, flagLimit)
+		if s.debug || s.stats || s.limit != 0 {
+			t.Errorf("got debug=%v stats=%v limit=%d, want them untouched", s.debug, s.stats, s.limit)
 		}
 	})
 	t.Run("CS_ names apply", func(t *testing.T) {
@@ -1423,44 +1412,47 @@ func TestEnvironmentVariables(t *testing.T) {
 		t.Setenv("CS_STATS", "true")
 		t.Setenv("CS_DEFAULTS_LIMIT", "7")
 		t.Setenv("CS_DEFAULTS_SORT", "z-a")
-		configFile = writeConfig(t, testConfig)
-		if err := loadConfig(); err != nil {
+		configFile := writeConfig(t, testConfig)
+		s, err := loadConfig(configFile)
+		if err != nil {
 			t.Fatalf("failed to load config: %v", err)
 		}
-		if !flagDebug || !flagStats || flagLimit != 7 || flagSort != "z-a" {
+		if !s.debug || !s.stats || s.limit != 7 || s.sort != "z-a" {
 			t.Errorf("got debug=%v stats=%v limit=%d sort=%q, want true true 7 z-a",
-				flagDebug, flagStats, flagLimit, flagSort)
+				s.debug, s.stats, s.limit, s.sort)
 		}
 	})
 	t.Run("environment overrides the config file", func(t *testing.T) {
 		resetConfigState(t)
 		t.Setenv("CS_DEFAULTS_LIMIT", "7")
-		configFile = writeConfig(t, testConfig+"defaults:\n  limit: 5\n")
-		if err := loadConfig(); err != nil {
+		configFile := writeConfig(t, testConfig+"defaults:\n  limit: 5\n")
+		s, err := loadConfig(configFile)
+		if err != nil {
 			t.Fatalf("failed to load config: %v", err)
 		}
-		if flagLimit != 7 {
-			t.Errorf("got limit %d, want 7", flagLimit)
+		if s.limit != 7 {
+			t.Errorf("got limit %d, want 7", s.limit)
 		}
 	})
 	t.Run("command line overrides the environment", func(t *testing.T) {
 		resetConfigState(t)
 		t.Setenv("CS_DEFAULTS_LIMIT", "7")
-		configFile = writeConfig(t, testConfig+"defaults:\n  limit: 5\n")
+		configFile := writeConfig(t, testConfig+"defaults:\n  limit: 5\n")
 		setFlag(t, "limit", "10")
-		if err := loadConfig(); err != nil {
+		s, err := loadConfig(configFile)
+		if err != nil {
 			t.Fatalf("failed to load config: %v", err)
 		}
-		if flagLimit != 10 {
-			t.Errorf("got limit %d, want 10", flagLimit)
+		if s.limit != 10 {
+			t.Errorf("got limit %d, want 10", s.limit)
 		}
 	})
 	t.Run("a negative value from the environment is rejected", func(t *testing.T) {
 		resetConfigState(t)
 		t.Setenv("CS_DEFAULTS_LIMIT", "-1")
-		configFile = writeConfig(t, testConfig)
-		if err := loadConfig(); err == nil {
-			t.Errorf("got nil error, want a failure (limit=%d)", flagLimit)
+		configFile := writeConfig(t, testConfig)
+		if s, err := loadConfig(configFile); err == nil {
+			t.Errorf("got nil error, want a failure (limit=%d)", s.limit)
 		}
 	})
 }
@@ -1474,8 +1466,8 @@ func TestNoColorEnvironment(t *testing.T) {
 		// off; undo that so only NO_COLOR is left to do it
 		color.NoColor = false
 		resetConfigState(t)
-		configFile = writeConfig(t, testConfig)
-		if err := loadConfig(); err != nil {
+		configFile := writeConfig(t, testConfig)
+		if _, err := loadConfig(configFile); err != nil {
 			t.Fatalf("failed to load config: %v", err)
 		}
 		fmt.Printf("bold=%q red=%q\n", textBold.Sprint("x"), textBoldRed.Sprint("x"))
@@ -1562,11 +1554,10 @@ func TestRunSearchEndToEnd(t *testing.T) {
 	color.NoColor = true
 	defer func() { color.NoColor = old }()
 	cfg, root := searchTestConfig(t, false)
-	flagSort = "a-z"
-	flagSearchContextBefore = 1
+	s := settings{sort: "a-z", linesBefore: 1}
 
 	var stdout, stderr bytes.Buffer
-	if err := runSearch(context.Background(), cfg, []string{"needle"}, &stdout, &stderr); err != nil {
+	if err := runSearch(context.Background(), cfg, s, []string{"needle"}, &stdout, &stderr); err != nil {
 		t.Fatalf("got error %v, want nil; stderr:\n%s", err, stderr.String())
 	}
 	want := "local:" + root + ":a.go ()\n\n2: \n3: func needle() {}\n\n" +
@@ -1591,7 +1582,7 @@ func TestRunSearchPartialFailure(t *testing.T) {
 	cfg, root := searchTestConfig(t, true)
 
 	var stdout, stderr bytes.Buffer
-	err := runSearch(context.Background(), cfg, []string{"func needle"}, &stdout, &stderr)
+	err := runSearch(context.Background(), cfg, settings{}, []string{"func needle"}, &stdout, &stderr)
 	if !errors.Is(err, errReported) {
 		t.Fatalf("got error %v, want one wrapping errReported", err)
 	}

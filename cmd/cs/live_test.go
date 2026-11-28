@@ -220,22 +220,18 @@ func TestLivePrinterBackendFailsAfterResults(t *testing.T) {
 
 // TestCanPrintLive: the modes that need every result first do not print live.
 func TestCanPrintLive(t *testing.T) {
-	resetConfigState(t)
-	if !canPrintLive() {
+	if !canPrintLive(settings{}) {
 		t.Error("got false for a plain search, want true")
 	}
-	for name, set := range map[string]func(){
-		"--json": func() { flagJSON = true },
-		"--sort": func() { flagSort = "a-z" },
-		"-F":     func() { flagSearchInFilenames = true },
+	for name, s := range map[string]settings{
+		"--json": {json: true},
+		"--sort": {sort: "a-z"},
+		"-F":     {searchInFilenames: true},
 	} {
-		resetConfigState(t)
-		set()
-		if canPrintLive() {
+		if canPrintLive(s) {
 			t.Errorf("got true with %s, want false", name)
 		}
 	}
-	resetConfigState(t)
 }
 
 // blockedWriter accepts nothing until it is released, like the stdout of a
