@@ -59,6 +59,12 @@ backends:
       token: your-token
       # search only code for this organization
       org: your-org-or-github-username
+      # Directory where downloaded files are kept, so that a repeated search
+      # does not download them again. It holds source code from every
+      # repository you search, private ones included. The default is
+      # `cs/github` in your user cache directory (~/.cache on Linux). Set it
+      # to "" to turn the cache off.
+      # cache_dir: ~/.cache/cs/github
 
   # Configuration for the `gitlab` backend. `gitlab` uses the GitLab
   # Advanced Search API, which is only available on the Premium and Ultimate

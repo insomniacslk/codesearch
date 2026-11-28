@@ -215,6 +215,8 @@ func newGithubBackend(t *testing.T, url string) *Github {
 		"org":          "testorg",
 		"token":        "testtoken",
 		"api_endpoint": url,
+		// never the real cache of whoever runs the tests
+		"cache_dir": t.TempDir(),
 	})
 	if err != nil {
 		t.Fatalf("failed to build backend: %v", err)
