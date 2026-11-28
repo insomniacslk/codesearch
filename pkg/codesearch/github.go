@@ -381,6 +381,10 @@ func githubAbortsSearch(ctx context.Context, err error) bool {
 // false if the indices are missing or do not describe a range inside the
 // fragment. They come from the API and are used to slice, so they cannot be
 // trusted.
+//
+// The indices are offsets in bytes of the UTF-8 fragment, not in characters.
+// The API documentation does not say which; this was checked against
+// api.github.com with matches that follow non-ASCII text.
 func githubMatchIndices(match *github.Match, fragment string) (int, int, bool) {
 	// indices is documented as a start/end pair but is omitted entirely for
 	// some match kinds
