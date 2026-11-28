@@ -167,3 +167,47 @@ func TestConcurrentSearchesOnOneBackend(t *testing.T) {
 		}
 	}
 }
+
+// TestBackendsPassOnResultsInOrder covers the OnResult contract for the
+// backends that call it: what they pass on while they search is exactly what
+// they return, in the same order.
+func TestBackendsPassOnResultsInOrder(t *testing.T) {
+	var searches, contents int32
+	srv := pagedGithubServer(t, 3, 10, &searches, &contents)
+	defer srv.Close()
+	files := map[string]string{}
+	for i := range 40 {
+		files[fmt.Sprintf("d%d/f%02d.go", i%3, i)] = "needle\nother\nneedle again\n"
+	}
+	indexFile, _ := newTestIndex(t, files)
+
+	for name, b := range map[string]Backend{
+		"github":  newGithubBackend(t, srv.URL),
+		"csearch": newCsearchBackend(t, indexFile),
+	} {
+		for _, limit := range []uint{0, 7} {
+			t.Run(fmt.Sprintf("%s/limit=%d", name, limit), func(t *testing.T) {
+				var passedOn Results
+				results, err := b.Search(context.Background(), "needle", SearchOptions{
+					Limit:    limit,
+					OnResult: func(r Result) { passedOn = append(passedOn, r) },
+				})
+				if err != nil {
+					t.Fatalf("search failed: %v", err)
+				}
+				if len(results) == 0 {
+					t.Fatal("got no results")
+				}
+				if len(passedOn) != len(results) {
+					t.Fatalf("got %d results passed on, want the %d that were returned", len(passedOn), len(results))
+				}
+				for i := range results {
+					if passedOn[i].Path != results[i].Path || passedOn[i].Lineno != results[i].Lineno {
+						t.Fatalf("result %d passed on is %s:%d, returned is %s:%d",
+							i, passedOn[i].Path, passedOn[i].Lineno, results[i].Path, results[i].Lineno)
+					}
+				}
+			})
+		}
+	}
+}

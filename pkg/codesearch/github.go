@@ -506,6 +506,7 @@ func (g *Github) toResult(ctx context.Context, client *github.Client, csresults 
 					}
 				}
 				results = append(results, result)
+				opts.emit(result)
 			}
 		}
 	}
