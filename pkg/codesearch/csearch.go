@@ -3,6 +3,7 @@ package codesearch
 import (
 	"bytes"
 	"context"
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"io"
@@ -124,6 +125,12 @@ type indexFormat struct {
 	magic   string
 	trailer string
 	minSize int64
+	// The table right before the trailer holds `fields` big-endian integers
+	// of fieldSize bytes each. Those at the positions in offsets are where
+	// the sections of the file start, in file order.
+	fields    int
+	fieldSize int
+	offsets   []int
 }
 
 // indexMagicLen is the length of the header, the same in every format.
@@ -133,17 +140,22 @@ const indexMagicLen = 16
 // is written by cindex up to v1.2.0 and has five 4-byte offsets, version 2 by
 // later releases and has eight 8-byte ones.
 var indexFormats = []indexFormat{
-	{magic: "csearch index 1\n", trailer: "\ncsearch trailr\n", minSize: 16 + 5*4 + 16},
-	{magic: "csearch index 2\n", trailer: "\ncsearch trlr 2\n", minSize: 16 + 8*8 + 16},
+	// path list, name list, posting lists, name index, posting list index
+	{magic: "csearch index 1\n", trailer: "\ncsearch trailr\n", minSize: 16 + 5*4 + 16,
+		fields: 5, fieldSize: 4, offsets: []int{0, 1, 2, 3, 4}},
+	// the same sections, with the number of entries after the first three
+	{magic: "csearch index 2\n", trailer: "\ncsearch trlr 2\n", minSize: 16 + 8*8 + 16,
+		fields: 8, fieldSize: 8, offsets: []int{0, 2, 4, 6, 7}},
 }
 
 // openIndex validates the index before handing it to index.Open, which calls
 // log.Fatal on anything it does not like and so would take the whole process
 // down with "corrupt index" even when the file is simply not there. Checking
 // the header, the size and the trailer catches missing, foreign and truncated
-// files. Deeper corruption (bad section offsets) can still reach log.Fatal in
-// the library; there is no way to recover from that short of re-parsing the
-// whole format here.
+// files, and checking the section offsets catches a file whose table of
+// contents is damaged. Corruption inside a section can still reach log.Fatal
+// in the library; there is no way to recover from that short of re-parsing
+// the whole format here.
 func openIndex(path string) (*index.Index, error) {
 	f, err := os.Open(path)
 	if err != nil {
@@ -182,7 +194,38 @@ func openIndex(path string) (*index.Index, error) {
 	if _, err := f.ReadAt(trailer, info.Size()-int64(len(trailer))); err != nil || string(trailer) != format.trailer {
 		return nil, fmt.Errorf("index %q is truncated, recreate it with cindex", path)
 	}
+	if err := format.checkOffsets(f, info.Size()); err != nil {
+		return nil, fmt.Errorf("index %q is corrupt (%w), recreate it with cindex", path, err)
+	}
 	return index.Open(path), nil
+}
+
+// checkOffsets verifies that the sections of an index of this size start
+// where a section can start: after the header, before the table itself, and
+// in file order. The library takes these offsets on trust and slices the
+// file with them.
+func (format *indexFormat) checkOffsets(f io.ReaderAt, size int64) error {
+	tableSize := int64(format.fields * format.fieldSize)
+	tableStart := size - int64(len(format.trailer)) - tableSize
+	table := make([]byte, tableSize)
+	if _, err := f.ReadAt(table, tableStart); err != nil {
+		return fmt.Errorf("cannot read the section table: %w", err)
+	}
+	previous := uint64(indexMagicLen)
+	for _, field := range format.offsets {
+		raw := table[field*format.fieldSize : (field+1)*format.fieldSize]
+		var offset uint64
+		if format.fieldSize == 4 {
+			offset = uint64(binary.BigEndian.Uint32(raw))
+		} else {
+			offset = binary.BigEndian.Uint64(raw)
+		}
+		if offset < previous || offset > uint64(tableStart) {
+			return fmt.Errorf("section offset %d is outside of %d..%d", offset, previous, tableStart)
+		}
+		previous = offset
+	}
+	return nil
 }
 
 // indexRoots returns the directories that were passed to cindex.
