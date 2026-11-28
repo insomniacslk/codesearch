@@ -8,6 +8,8 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
+	"sync/atomic"
 
 	"github.com/sirupsen/logrus"
 	gitlab "gitlab.com/gitlab-org/api/client-go"
@@ -165,10 +167,11 @@ func (g *Gitlab) Search(ctx context.Context, searchString string, opts SearchOpt
 }
 
 func (g *Gitlab) toResult(client *gitlab.Client, withCtx gitlab.RequestOptionFunc, searchString string, blobs []*gitlab.Blob, opts SearchOptions) (Results, error) {
-	var (
-		results  Results
-		projects = make(map[int64]*gitlab.Project)
-	)
+	projects, err := g.fetchProjects(client, withCtx, blobs)
+	if err != nil {
+		return nil, err
+	}
+	var results Results
 	for _, blob := range blobs {
 		logrus.Debugf("Result:")
 		logrus.Debugf("  Basename: %s:", blob.Basename)
@@ -180,14 +183,6 @@ func (g *Gitlab) toResult(client *gitlab.Client, withCtx gitlab.RequestOptionFun
 		logrus.Debugf("  Startline: %d", blob.Startline)
 		logrus.Debugf("  ProjectID: %d", blob.ProjectID)
 
-		if _, ok := projects[blob.ProjectID]; !ok {
-			project, response, err := client.Projects.GetProject(blob.ProjectID, &gitlab.GetProjectOptions{}, withCtx)
-			logrus.Debugf("Projects.GetProject response: %+v", response)
-			if err != nil {
-				return nil, fmt.Errorf("failed to get project with ID %d: %w", blob.ProjectID, err)
-			}
-			projects[blob.ProjectID] = project
-		}
 		logrus.Debugf("  Project Name: %s", projects[blob.ProjectID].Name)
 
 		project := projects[blob.ProjectID]
@@ -230,6 +225,62 @@ func (g *Gitlab) toResult(client *gitlab.Client, withCtx gitlab.RequestOptionFun
 		results = append(results, result)
 	}
 	return results, nil
+}
+
+// gitlabProjectConcurrency is how many projects are requested at once.
+const gitlabProjectConcurrency = 8
+
+// fetchProjects gets the project of every blob. A blob only carries the ID of
+// its project, and the URL, name and default branch that a result needs take
+// one request per project; these are independent, so they are made in
+// parallel. The error returned is the one of the first project in blob order
+// that failed, as a serial run would report.
+func (g *Gitlab) fetchProjects(client *gitlab.Client, withCtx gitlab.RequestOptionFunc, blobs []*gitlab.Blob) (map[int64]*gitlab.Project, error) {
+	var ids []int64
+	seen := make(map[int64]bool)
+	for _, blob := range blobs {
+		if !seen[blob.ProjectID] {
+			seen[blob.ProjectID] = true
+			ids = append(ids, blob.ProjectID)
+		}
+	}
+	fetched := make([]*gitlab.Project, len(ids))
+	errs := make([]error, len(ids))
+	var (
+		wg     sync.WaitGroup
+		failed atomic.Bool
+		slots  = make(chan struct{}, gitlabProjectConcurrency)
+	)
+	for i, id := range ids {
+		slots <- struct{}{}
+		if failed.Load() {
+			// the search fails anyway, do not spend more requests on it
+			<-slots
+			break
+		}
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			defer func() { <-slots }()
+			project, response, err := client.Projects.GetProject(id, &gitlab.GetProjectOptions{}, withCtx)
+			logrus.Debugf("Projects.GetProject response: %+v", response)
+			if err != nil {
+				errs[i] = fmt.Errorf("failed to get project with ID %d: %w", id, err)
+				failed.Store(true)
+				return
+			}
+			fetched[i] = project
+		}()
+	}
+	wg.Wait()
+	projects := make(map[int64]*gitlab.Project, len(ids))
+	for i, id := range ids {
+		if errs[i] != nil {
+			return nil, errs[i]
+		}
+		projects[id] = fetched[i]
+	}
+	return projects, nil
 }
 
 // gitlabLocate finds the line a blob matched on and the match within it. The
