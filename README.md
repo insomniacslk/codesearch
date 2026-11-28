@@ -54,8 +54,8 @@ Feature matrix:
 | Highlight search pattern | ✅       | ✅     | ✅      |
 | Limit to N results       | ✅       | ✅     | ✅      |
 | Sorting                  | ✅       | ✅     | ✅      |
-| Rate limiting            | ✅       | ❌     | N/A     |
-| Response caching         | ❌       | ❌     | N/A     |
+| Rate limiting            | ✅       | ✅     | N/A     |
+| File caching             | ✅       | ❌     | N/A     |
 | Case sensitivity         | ❌       | ❌     | ✅      |
 | Show context lines       | ✅       | max 3  | ✅      |
 | Full file fetching       | ✅       | ❌     | ✅      |
@@ -141,3 +141,37 @@ BitBucket support might be implemented in the future.
 
 Note that for local search to work you must create (and keep up to date) a local
 index using [`cindex`](https://github.com/google/codesearch/tree/master/cmd/cindex).
+`cs` reads both index formats: format 1, which `cindex` wrote up to v1.2.0, and
+format 2, which later versions write.
+
+### What to expect from each backend
+
+**GitHub**
+
+* The search API returns at most 1000 hits for a query, and allows about 10
+  searches a minute. `cs` asks for 100 hits a page, so a full search fits in
+  that budget. When a rate limit still interrupts a search, the results fetched
+  so far are printed with a warning that they are incomplete.
+* Every hit needs the content of its file, for the line number and the context.
+  The files are downloaded 8 at a time and kept in the
+  [file cache](#github-file-cache).
+* A match is shown from the search fragment alone, without a line number, when
+  its file cannot be used: it changed after GitHub indexed it, it cannot be
+  downloaded, or it is larger than 32MB.
+* A search that finds nothing in an organization or user that GitHub does not
+  know prints a warning, as a wrong `org` otherwise looks like "no matches".
+
+**GitLab**
+
+* `group` or `project` narrow the search, as a numeric ID or a full path.
+* GitLab returns a short snippet for each hit, so at most 3 lines of context
+  are available.
+* When a rate limit interrupts a search, the results fetched so far are printed
+  with a warning that they are incomplete.
+
+**Csearch**
+
+* The index is a snapshot. A file that was deleted after `cindex` ran is
+  skipped with a warning, and a file that was added is not found.
+* The index is checked before it is used, and a missing, truncated or damaged
+  index is reported as an error that says to build it again.
