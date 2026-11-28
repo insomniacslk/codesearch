@@ -1111,3 +1111,37 @@ func TestGithubAbortStopsDownloads(t *testing.T) {
 		t.Errorf("got %d content requests, want at most %d", got, githubDownloadConcurrency)
 	}
 }
+
+// TestGithubHighlightAfterNonASCII pins how match indices are read: as byte
+// offsets, which is what api.github.com sends. The fragment and the indices
+// have the shape of a real response for the query "già", where two multi-byte
+// characters come before the match, so byte and character offsets differ.
+func TestGithubHighlightAfterNonASCII(t *testing.T) {
+	const (
+		file     = "# Note\nperò è così: già scritto\nfine\n"
+		fragment = "però è così: già scritto"
+	)
+	start := strings.Index(fragment, "già")
+	if start == len([]rune(fragment[:start])) {
+		t.Fatal("the test needs multi-byte characters before the match")
+	}
+	srv := githubServer(t,
+		codeResultJSON("note.md", fragment, start, start+len("già")),
+		fileContents(base64File(file)))
+	defer srv.Close()
+
+	results, err := newGithubBackend(t, srv.URL).Search(context.Background(), "già", SearchOptions{})
+	if err != nil {
+		t.Fatalf("search failed: %v", err)
+	}
+	if len(results) != 1 {
+		t.Fatalf("got %d results, want 1", len(results))
+	}
+	r := results[0]
+	if r.Lineno != 2 || r.Line != fragment {
+		t.Fatalf("got line %d %q, want line 2 %q", r.Lineno, r.Line, fragment)
+	}
+	if got := r.Line[r.Highlight[0]:r.Highlight[1]]; got != "già" {
+		t.Errorf("got highlight %q, want %q", got, "già")
+	}
+}
