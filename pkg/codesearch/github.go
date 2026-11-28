@@ -69,6 +69,7 @@ func (g *Github) Supports(Capability) bool {
 }
 
 func (g *Github) Search(ctx context.Context, terms string, opts SearchOptions) (Results, error) {
+	log := opts.logger()
 	searchstring := terms
 	if g.org != "" {
 		searchstring = "org:" + g.org + " " + terms
@@ -100,17 +101,17 @@ func (g *Github) Search(ctx context.Context, terms string, opts SearchOptions) (
 			results  *github.CodeSearchResult
 			response *github.Response
 		)
-		err := retry(ctx, func() error {
+		err := retry(ctx, log, func() error {
 			var err error
 			results, response, err = client.Search.Code(ctx, searchstring, &sopts)
-			logrus.Debugf("Response: %+v", response)
+			log.Debugf("Response: %+v", response)
 			return err
 		})
 		if err != nil {
 			if len(csresults) > 0 && githubIsRateLimit(err) {
 				// the pages fetched so far are still good, and dropping them
 				// would leave a broad search with no way to ever succeed
-				logrus.Warnf("Results are incomplete, rate limited after %d hits: %v", len(csresults), err)
+				log.Warnf("Results are incomplete, rate limited after %d hits: %v", len(csresults), err)
 				break
 			}
 			return nil, fmt.Errorf("search failed: %w", err)
@@ -120,15 +121,15 @@ func (g *Github) Search(ctx context.Context, terms string, opts SearchOptions) (
 			break
 		}
 		if opts.Limit > 0 && uint(len(csresults)) >= opts.Limit {
-			logrus.Debugf("Stopping after %d hits, enough for a limit of %d", len(csresults), opts.Limit)
+			log.Debugf("Stopping after %d hits, enough for a limit of %d", len(csresults), opts.Limit)
 			break
 		}
 		sopts.Page = response.NextPage
 	}
 	if len(csresults) == 0 {
-		g.warnIfUnknownOrg(ctx, client)
+		g.warnIfUnknownOrg(ctx, log, client)
 	}
-	return g.toResult(ctx, client, csresults, opts)
+	return g.toResult(ctx, log, client, csresults, opts)
 }
 
 // warnIfUnknownOrg explains an empty result when the configured org is the
@@ -136,7 +137,7 @@ func (g *Github) Search(ctx context.Context, terms string, opts SearchOptions) (
 // not exist, or that the token cannot see, the same way as a search without
 // matches: with success and no hits. A typing error in the configuration
 // would otherwise look like "no matches" for ever.
-func (g *Github) warnIfUnknownOrg(ctx context.Context, client *github.Client) {
+func (g *Github) warnIfUnknownOrg(ctx context.Context, log logrus.FieldLogger, client *github.Client) {
 	if g.org == "" {
 		return
 	}
@@ -146,11 +147,11 @@ func (g *Github) warnIfUnknownOrg(ctx context.Context, client *github.Client) {
 		return
 	}
 	if resp != nil && resp.StatusCode == http.StatusNotFound {
-		logrus.Warnf("No results, and GitHub knows no organization or user called %q: check the 'org' parameter of backend %q", g.org, g.name)
+		log.Warnf("No results, and GitHub knows no organization or user called %q: check the 'org' parameter of backend %q", g.org, g.name)
 		return
 	}
 	// the check is a courtesy; failing to make it is not worth reporting
-	logrus.Debugf("Could not check whether %q exists: %v", g.org, err)
+	log.Debugf("Could not check whether %q exists: %v", g.org, err)
 }
 
 // githubSearchPageSize is the largest page size the search API accepts.
@@ -169,7 +170,7 @@ const maxAttempts = 3
 // retrying, or until maxAttempts have been made. Pagination must not be driven
 // from here: mixing the two is what previously let a permanently rate limited
 // search spin forever without ever returning an error.
-func retry(ctx context.Context, fn func() error) error {
+func retry(ctx context.Context, log logrus.FieldLogger, fn func() error) error {
 	var err error
 	for attempt := 1; ; attempt++ {
 		if cerr := ctx.Err(); cerr != nil {
@@ -185,7 +186,7 @@ func retry(ctx context.Context, fn func() error) error {
 		if attempt >= maxAttempts {
 			return fmt.Errorf("giving up after %d attempts: %w", maxAttempts, err)
 		}
-		logrus.Warnf("Throttled, waiting %s before retry %d/%d", delay.Round(time.Second), attempt+1, maxAttempts)
+		log.Warnf("Throttled, waiting %s before retry %d/%d", delay.Round(time.Second), attempt+1, maxAttempts)
 		if serr := sleep(ctx, delay); serr != nil {
 			return serr
 		}
@@ -352,7 +353,7 @@ func githubRef(res *github.CodeResult) githubFileRef {
 	}
 }
 
-func (g *Github) fetchFile(ctx context.Context, client *github.Client, ref githubFileRef) (string, error) {
+func (g *Github) fetchFile(ctx context.Context, log logrus.FieldLogger, client *github.Client, ref githubFileRef) (string, error) {
 	owner, repo, path := ref.owner, ref.repo, ref.path
 	fullPath := ref.String()
 	var rc *github.RepositoryContent
@@ -362,8 +363,8 @@ func (g *Github) fetchFile(ctx context.Context, client *github.Client, ref githu
 	// prefix: there an exhausted code search quota is filed under the core
 	// API and would block every file download. Let the server decide instead.
 	ctx = context.WithValue(ctx, github.BypassRateLimitCheck, true)
-	err := retry(ctx, func() error {
-		logrus.Debugf("Fetching file content, owner=%q repo=%q path=%q", owner, repo, path)
+	err := retry(ctx, log, func() error {
+		log.Debugf("Fetching file content, owner=%q repo=%q path=%q", owner, repo, path)
 		var (
 			resp *github.Response
 			err  error
@@ -371,8 +372,8 @@ func (g *Github) fetchFile(ctx context.Context, client *github.Client, ref githu
 		rc, _, resp, err = client.Repositories.GetContents(
 			ctx, owner, repo, path, &github.RepositoryContentGetOptions{},
 		)
-		logrus.Debugf("Response: %+v", resp)
-		logrus.Debugf("RepositoryContent: %+v", rc)
+		log.Debugf("Response: %+v", resp)
+		log.Debugf("RepositoryContent: %+v", rc)
 		return err
 	})
 	if err != nil {
@@ -389,7 +390,7 @@ func (g *Github) fetchFile(ctx context.Context, client *github.Client, ref githu
 		if size := rc.GetSize(); size > githubMaxFileSize {
 			return "", fmt.Errorf("file %q is too large to download: %d bytes, the limit is %d", fullPath, size, githubMaxFileSize)
 		}
-		return g.fetchRawFile(ctx, client, ref)
+		return g.fetchRawFile(ctx, log, client, ref)
 	}
 	// GetContent decodes according to the reported encoding, rather than
 	// dereferencing a Content that GitHub may not have populated at all.
@@ -408,14 +409,14 @@ const githubMaxFileSize = 32 << 20
 // fetchRawFile downloads a file through the raw media type of the contents
 // API, which is how GitHub serves the files it does not embed in the JSON
 // response.
-func (g *Github) fetchRawFile(ctx context.Context, client *github.Client, ref githubFileRef) (string, error) {
+func (g *Github) fetchRawFile(ctx context.Context, log logrus.FieldLogger, client *github.Client, ref githubFileRef) (string, error) {
 	// escaped the way go-github escapes the path for GetContents
 	escapedPath := (&url.URL{Path: strings.TrimSuffix(ref.path, "/")}).String()
 	// The size that the first response reported was within the limit, but
 	// the file can have grown since, and the body is read as it comes.
 	body := &cappedBuffer{limit: githubMaxFileSize}
-	err := retry(ctx, func() error {
-		logrus.Debugf("Fetching raw file content of %q", ref)
+	err := retry(ctx, log, func() error {
+		log.Debugf("Fetching raw file content of %q", ref)
 		req, err := client.NewRequest("GET", fmt.Sprintf("repos/%v/%v/contents/%v", ref.owner, ref.repo, escapedPath), nil)
 		if err != nil {
 			return err
@@ -478,7 +479,7 @@ func githubMatchIndices(match *github.Match, fragment string) (int, int, bool) {
 	return i0, i1, true
 }
 
-func (g *Github) toResult(ctx context.Context, client *github.Client, csresults []*github.CodeResult, opts SearchOptions) (Results, error) {
+func (g *Github) toResult(ctx context.Context, log logrus.FieldLogger, client *github.Client, csresults []*github.CodeResult, opts SearchOptions) (Results, error) {
 	var results Results
 	// the files to download, in the order the loop below needs them, and the
 	// position of the file of each hit in that order
@@ -498,15 +499,15 @@ func (g *Github) toResult(ctx context.Context, client *github.Client, csresults 
 		}
 	}
 	downloader := newGithubDownloader(ctx, queue, func(ctx context.Context, ref githubFileRef) (string, error) {
-		if text, ok := g.cache.load(ref.sha); ok {
-			logrus.Debugf("Using cached content for %q", ref)
+		if text, ok := g.cache.load(log, ref.sha); ok {
+			log.Debugf("Using cached content for %q", ref)
 			return text, nil
 		}
-		text, err := g.fetchFile(ctx, client, ref)
+		text, err := g.fetchFile(ctx, log, client, ref)
 		if err == nil {
 			// stored under the SHA of what was downloaded, which is not
 			// ref.sha when the file changed after GitHub indexed it
-			g.cache.store(text)
+			g.cache.store(log, text)
 		}
 		return text, err
 	})
@@ -527,13 +528,13 @@ func (g *Github) toResult(ctx context.Context, client *github.Client, csresults 
 			}
 			downloader.startUpTo(pos + ahead)
 		}
-		logrus.Debugf("Result:\n")
-		logrus.Debugf("  Name: %s:\n", res.GetName())
-		logrus.Debugf("  Path: %s:\n", res.GetPath())
-		logrus.Debugf("  SHA: %s:\n", res.GetSHA())
-		logrus.Debugf("  HTMLURL: %s:\n", res.GetHTMLURL())
-		logrus.Debugf("  Repository: %+v:\n", res.Repository)
-		logrus.Debugf("  TextMatches:\n")
+		log.Debugf("Result:\n")
+		log.Debugf("  Name: %s:\n", res.GetName())
+		log.Debugf("  Path: %s:\n", res.GetPath())
+		log.Debugf("  SHA: %s:\n", res.GetSHA())
+		log.Debugf("  HTMLURL: %s:\n", res.GetHTMLURL())
+		log.Debugf("  Repository: %+v:\n", res.Repository)
+		log.Debugf("  TextMatches:\n")
 		base := Result{
 			Backend:  g.Name(),
 			Path:     res.GetPath(),
@@ -545,13 +546,13 @@ func (g *Github) toResult(ctx context.Context, client *github.Client, csresults 
 		}
 		warned := false
 		for idx, tm := range res.TextMatches {
-			logrus.Debugf("    %d) text match:\n", idx+1)
-			logrus.Debugf("        ObjectURL: %s\n", tm.GetObjectURL())
-			logrus.Debugf("        ObjectType: %s\n", tm.GetObjectType())
-			logrus.Debugf("        Property: %s\n", tm.GetProperty())
-			logrus.Debugf("        Fragment: %s\n", tm.GetFragment())
+			log.Debugf("    %d) text match:\n", idx+1)
+			log.Debugf("        ObjectURL: %s\n", tm.GetObjectURL())
+			log.Debugf("        ObjectType: %s\n", tm.GetObjectType())
+			log.Debugf("        Property: %s\n", tm.GetProperty())
+			log.Debugf("        Fragment: %s\n", tm.GetFragment())
 			if !githubNeedsFile(tm) {
-				logrus.Debugf("Skipping text match on property %q", tm.GetProperty())
+				log.Debugf("Skipping text match on property %q", tm.GetProperty())
 				continue
 			}
 			fragment := tm.GetFragment()
@@ -562,29 +563,29 @@ func (g *Github) toResult(ctx context.Context, client *github.Client, csresults 
 					return nil, f.err
 				}
 				if !warned {
-					logrus.Warnf("Showing only the search fragment for %q: %v", base.Path, f.err)
+					log.Warnf("Showing only the search fragment for %q: %v", base.Path, f.err)
 					warned = true
 				}
 			} else if fragmentStart = strings.Index(f.text, fragment); fragmentStart == -1 {
 				// the search index is behind the file, e.g. it changed after
 				// GitHub indexed it
 				if !warned {
-					logrus.Warnf("Showing only the search fragment for %q: fragment not found in the current file content", base.Path)
+					log.Warnf("Showing only the search fragment for %q: fragment not found in the current file content", base.Path)
 					warned = true
 				}
 			}
-			logrus.Debugf("        Matches:\n")
+			log.Debugf("        Matches:\n")
 			for _, match := range tm.Matches {
 				i0, i1, ok := githubMatchIndices(match, fragment)
 				if !ok {
-					logrus.Debugf("Skipping match with missing or invalid indices")
+					log.Debugf("Skipping match with missing or invalid indices")
 					continue
 				}
 				var result Result
 				if fragmentStart == -1 {
 					result = fragmentResult(base, fragment, i0, i1, opts)
 				} else {
-					result, ok = fileResult(base, f, fragmentStart+i0, i1-i0, opts)
+					result, ok = fileResult(log, base, f, fragmentStart+i0, i1-i0, opts)
 					if !ok {
 						continue
 					}
@@ -599,14 +600,14 @@ func (g *Github) toResult(ctx context.Context, client *github.Client, csresults 
 
 // fileResult builds a result for a match that starts at byte start of the
 // full file content.
-func fileResult(base Result, f *githubFile, start, length int, opts SearchOptions) (Result, bool) {
+func fileResult(log logrus.FieldLogger, base Result, f *githubFile, start, length int, opts SearchOptions) (Result, bool) {
 	lineno := strings.Count(f.text[:start], "\n") + 1
 	// start of the highlight, relative to the line rather than to the full
 	// text
 	startInLine := start - (strings.LastIndex(f.text[:start], "\n") + 1)
 	fileURL, err := url.Parse(base.FileURL)
 	if err != nil {
-		logrus.Warnf("Skipping match in %q: invalid file URL %q: %v", base.Path, base.FileURL, err)
+		log.Warnf("Skipping match in %q: invalid file URL %q: %v", base.Path, base.FileURL, err)
 		return Result{}, false
 	}
 	fileURL.Fragment = fmt.Sprintf("L%d", lineno)

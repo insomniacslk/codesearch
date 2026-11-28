@@ -12,6 +12,7 @@ import (
 // Both GitHub and GitLab used to accept -i and -F, store them in a field and
 // never read it, so the search silently answered a different question.
 func TestBackendCapabilities(t *testing.T) {
+	t.Parallel()
 	for _, tt := range []struct {
 		backendType       BackendType
 		params            BackendParams
@@ -43,6 +44,7 @@ func TestBackendCapabilities(t *testing.T) {
 // TestNewBackendUnimplementedType checks that the error names both the backend
 // and the type, for a type the config knows and for one it does not.
 func TestNewBackendUnimplementedType(t *testing.T) {
+	t.Parallel()
 	for _, typ := range []BackendType{BackendTypeBitbucket, "svn", ""} {
 		b, err := NewBackend("mine", BackendConfig{Type: typ})
 		if err == nil {
@@ -59,6 +61,7 @@ func TestNewBackendUnimplementedType(t *testing.T) {
 // TestNewBackendFailureIsNil checks that a constructor failure comes back as a
 // nil interface, not as a Backend wrapping a nil pointer.
 func TestNewBackendFailureIsNil(t *testing.T) {
+	t.Parallel()
 	b, err := NewBackend("mine", BackendConfig{Type: BackendTypeGithub, Params: BackendParams{}})
 	if err == nil {
 		t.Fatal("got nil error, want a failure for missing parameters")
@@ -75,6 +78,7 @@ func TestNewBackendFailureIsNil(t *testing.T) {
 // recognised types consistent: an implemented type the config does not
 // recognise would be reported as unknown by Validate.
 func TestBackendConstructorsAreKnownTypes(t *testing.T) {
+	t.Parallel()
 	for typ := range backendConstructors {
 		if !slices.Contains(knownBackendTypes, typ) {
 			t.Errorf("type %q has a constructor but is not in knownBackendTypes", typ)
@@ -85,6 +89,7 @@ func TestBackendConstructorsAreKnownTypes(t *testing.T) {
 // TestCsearchConsumesSupportedCapabilities checks that csearch, which claims
 // both capabilities, really does act on them.
 func TestCsearchConsumesSupportedCapabilities(t *testing.T) {
+	t.Parallel()
 	indexFile, _ := newTestIndex(t, map[string]string{"a.go": "NEEDLE in the haystack\n"})
 
 	sensitive, err := newCsearchBackend(t, indexFile).Search(context.Background(), "needle", SearchOptions{})
@@ -108,6 +113,7 @@ func TestCsearchConsumesSupportedCapabilities(t *testing.T) {
 // call. They used to be applied by mutating the backend, so one search left
 // its settings behind for the next one.
 func TestSearchOptionsDoNotLeakBetweenCalls(t *testing.T) {
+	t.Parallel()
 	indexFile, _ := newTestIndex(t, map[string]string{"a.go": "NEEDLE here\n"})
 	b := newCsearchBackend(t, indexFile)
 
@@ -133,6 +139,7 @@ func TestSearchOptionsDoNotLeakBetweenCalls(t *testing.T) {
 // serve overlapping searches with different options, which is what makes the
 // concurrent fan-out safe.
 func TestConcurrentSearchesOnOneBackend(t *testing.T) {
+	t.Parallel()
 	indexFile, _ := newTestIndex(t, map[string]string{
 		"a.go": "NEEDLE upper\n",
 		"b.go": "needle lower\n",
@@ -172,6 +179,7 @@ func TestConcurrentSearchesOnOneBackend(t *testing.T) {
 // backends that call it: what they pass on while they search is exactly what
 // they return, in the same order.
 func TestBackendsPassOnResultsInOrder(t *testing.T) {
+	t.Parallel()
 	var searches, contents int32
 	srv := pagedGithubServer(t, 3, 10, &searches, &contents)
 	defer srv.Close()

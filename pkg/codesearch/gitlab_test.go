@@ -69,6 +69,7 @@ func newGitlabBackend(t *testing.T, url string, params BackendParams) *Gitlab {
 // to the search endpoint as a URL-encoded path, without first listing every
 // group or project to resolve a numeric ID.
 func TestGitlabAddressesScopeDirectly(t *testing.T) {
+	t.Parallel()
 	for _, tt := range []struct {
 		name       string
 		params     BackendParams
@@ -127,6 +128,7 @@ func TestGitlabAddressesScopeDirectly(t *testing.T) {
 // bug: the old code resolved the scope by listing groups or projects without
 // paginating, so anything past the first page reported "not found".
 func TestGitlabScopeBeyondFirstPage(t *testing.T) {
+	t.Parallel()
 	for _, tt := range []struct {
 		name, listPath, searchPath string
 		params                     BackendParams
@@ -179,6 +181,7 @@ func TestGitlabScopeBeyondFirstPage(t *testing.T) {
 // TestGitlabUnknownScope checks that a scope the server rejects surfaces as an
 // error naming it, rather than silently searching something else.
 func TestGitlabUnknownScope(t *testing.T) {
+	t.Parallel()
 	rec := &gitlabRecorder{}
 	srv := httptest.NewServer(rec)
 	defer srv.Close()
@@ -196,6 +199,7 @@ func TestGitlabUnknownScope(t *testing.T) {
 }
 
 func TestGitlabPaginatesBlobs(t *testing.T) {
+	t.Parallel()
 	var pages int
 	rec := &gitlabRecorder{handler: func(w http.ResponseWriter, r *http.Request) bool {
 		if !strings.HasSuffix(r.URL.Path, "/search") {
@@ -227,6 +231,7 @@ func TestGitlabPaginatesBlobs(t *testing.T) {
 }
 
 func TestGitlabRejectsGroupAndProjectTogether(t *testing.T) {
+	t.Parallel()
 	_, err := NewGitlab("test", BackendParams{
 		"token":        "t",
 		"api_endpoint": "https://gitlab.example.com/api/v4",
@@ -277,6 +282,7 @@ func gitlabBlobSearch(t *testing.T, query, data, path string, startline int, opt
 // TestGitlabNegativeContext is the regression test for a panic: a negative
 // LinesBefore or LinesAfter produced inverted slice bounds.
 func TestGitlabNegativeContext(t *testing.T) {
+	t.Parallel()
 	for _, opts := range []SearchOptions{{LinesBefore: -1}, {LinesAfter: -2}, {LinesBefore: -5, LinesAfter: -5}} {
 		res := gitlabBlobSearch(t, "needle", "a\nneedle\nb\n", "f.go", 1, opts)[0]
 		if res.Line != "needle" || res.Lineno != 2 {
@@ -292,6 +298,7 @@ func TestGitlabNegativeContext(t *testing.T) {
 // queries: GitLab tokenises the query, so a blob can match without containing
 // the whole string, and reporting it as a file name match made the CLI drop it.
 func TestGitlabMatchClassification(t *testing.T) {
+	t.Parallel()
 	for _, tt := range []struct {
 		name, query, data, path string
 		startline               int
@@ -341,6 +348,7 @@ func TestGitlabMatchClassification(t *testing.T) {
 // lowercased copy: lowercasing "İ" adds a byte, which shifted the highlight
 // past the match and out of the line.
 func TestGitlabHighlightUnicode(t *testing.T) {
+	t.Parallel()
 	res := gitlabBlobSearch(t, "needle", "İİ\nİİ needle\n", "f.go", 1, SearchOptions{})[0]
 	if res.Line != "İİ needle" || res.Lineno != 2 {
 		t.Fatalf("got line %q at %d, want \"İİ needle\" at 2", res.Line, res.Lineno)
@@ -354,6 +362,7 @@ func TestGitlabHighlightUnicode(t *testing.T) {
 // project: YAML decodes it as a number, which was dropped, so the search ran
 // over every project the token can see.
 func TestGitlabNumericScope(t *testing.T) {
+	t.Parallel()
 	for _, tt := range []struct {
 		name               string
 		params             BackendParams
@@ -393,6 +402,7 @@ func TestGitlabNumericScope(t *testing.T) {
 // TestGitlabNilNamespace checks that a project without a namespace does not
 // crash result conversion.
 func TestGitlabNilNamespace(t *testing.T) {
+	t.Parallel()
 	rec := &gitlabRecorder{handler: func(w http.ResponseWriter, r *http.Request) bool {
 		switch {
 		case strings.HasSuffix(r.URL.Path, "/search"):
@@ -467,6 +477,7 @@ func gitlabProjectsServer(t *testing.T, projects int, failing map[int]bool, peak
 // time, never more than gitlabProjectConcurrency, each of them once, and
 // every result still gets the project its blob belongs to, in blob order.
 func TestGitlabFetchesProjectsInParallel(t *testing.T) {
+	t.Parallel()
 	const projects = 30
 	var (
 		peak     int32
@@ -506,6 +517,7 @@ func TestGitlabFetchesProjectsInParallel(t *testing.T) {
 // the search, as before, and names the first such project in blob order
 // however the requests happened to finish.
 func TestGitlabProjectFailureIsReported(t *testing.T) {
+	t.Parallel()
 	var (
 		peak     int32
 		requests sync.Map
@@ -560,6 +572,7 @@ func gitlabRateLimitedServer(t *testing.T, good int, searches *int32) *httptest.
 // TestGitlabRateLimitKeepsEarlierPages: a rate limit part way through the
 // pages must not discard the hits that were already fetched.
 func TestGitlabRateLimitKeepsEarlierPages(t *testing.T) {
+	t.Parallel()
 	var searches int32
 	srv := gitlabRateLimitedServer(t, 2, &searches)
 	defer srv.Close()
@@ -576,6 +589,7 @@ func TestGitlabRateLimitKeepsEarlierPages(t *testing.T) {
 // TestGitlabRateLimitOnFirstPage: with nothing fetched there is nothing to
 // keep, and an empty result would look like "no matches".
 func TestGitlabRateLimitOnFirstPage(t *testing.T) {
+	t.Parallel()
 	var searches int32
 	srv := gitlabRateLimitedServer(t, 0, &searches)
 	defer srv.Close()
@@ -590,6 +604,7 @@ func TestGitlabRateLimitOnFirstPage(t *testing.T) {
 // are fetched keeps the results of the projects that were fetched, and drops
 // only the blobs of the others. With no project at all it is an error.
 func TestGitlabRateLimitOnProjectsKeepsTheRest(t *testing.T) {
+	t.Parallel()
 	for name, tt := range map[string]struct {
 		limited   map[int]bool
 		wantPaths []string

@@ -31,9 +31,18 @@ func secondaryLimitError(after time.Duration) error {
 	return &github.AbuseRateLimitError{RetryAfter: &after, Message: "secondary rate limit"}
 }
 
+// discardLogger returns a logger that throws away what it is given, for the
+// tests that do not look at log output but must not write to the standard
+// logger either.
+func discardLogger() logrus.FieldLogger {
+	log, _ := logrustest.NewNullLogger()
+	return log
+}
+
 func TestRetrySucceedsOnFirstAttempt(t *testing.T) {
+	t.Parallel()
 	calls := 0
-	err := retry(context.Background(), func() error {
+	err := retry(context.Background(), discardLogger(), func() error {
 		calls++
 		return nil
 	})
@@ -46,9 +55,10 @@ func TestRetrySucceedsOnFirstAttempt(t *testing.T) {
 }
 
 func TestRetryDoesNotRetryOtherErrors(t *testing.T) {
+	t.Parallel()
 	want := errors.New("boom")
 	calls := 0
-	err := retry(context.Background(), func() error {
+	err := retry(context.Background(), discardLogger(), func() error {
 		calls++
 		return want
 	})
@@ -64,10 +74,11 @@ func TestRetryDoesNotRetryOtherErrors(t *testing.T) {
 // loop: the old code drove pagination from the retry counter, so a search that
 // stayed throttled restarted the inner loop forever and never returned.
 func TestRetryGivesUpAfterMaxAttempts(t *testing.T) {
+	t.Parallel()
 	calls := 0
 	done := make(chan error, 1)
 	go func() {
-		done <- retry(context.Background(), func() error {
+		done <- retry(context.Background(), discardLogger(), func() error {
 			calls++
 			return secondaryLimitError(0)
 		})
@@ -93,6 +104,7 @@ func TestRetryGivesUpAfterMaxAttempts(t *testing.T) {
 // the whole window is spent, so retrying inside one command can only hang and
 // then spend the fresh quota on the query that exhausted it.
 func TestRetryDoesNotRetryPrimaryRateLimits(t *testing.T) {
+	t.Parallel()
 	for _, reset := range []time.Time{
 		time.Now().Add(-time.Hour),
 		time.Now().Add(30 * time.Second),
@@ -100,7 +112,7 @@ func TestRetryDoesNotRetryPrimaryRateLimits(t *testing.T) {
 	} {
 		calls := 0
 		start := time.Now()
-		err := retry(context.Background(), func() error {
+		err := retry(context.Background(), discardLogger(), func() error {
 			calls++
 			return rateLimitError(reset)
 		})
@@ -119,8 +131,9 @@ func TestRetryDoesNotRetryPrimaryRateLimits(t *testing.T) {
 }
 
 func TestRetryRecoversAfterSecondaryLimit(t *testing.T) {
+	t.Parallel()
 	calls := 0
-	err := retry(context.Background(), func() error {
+	err := retry(context.Background(), discardLogger(), func() error {
 		calls++
 		if calls < maxAttempts {
 			return secondaryLimitError(0)
@@ -136,10 +149,11 @@ func TestRetryRecoversAfterSecondaryLimit(t *testing.T) {
 }
 
 func TestRetryStopsOnCancelledContext(t *testing.T) {
+	t.Parallel()
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	calls := 0
-	err := retry(ctx, func() error {
+	err := retry(ctx, discardLogger(), func() error {
 		calls++
 		return nil
 	})
@@ -152,10 +166,11 @@ func TestRetryStopsOnCancelledContext(t *testing.T) {
 }
 
 func TestRetryStopsWhenContextExpiresDuringBackoff(t *testing.T) {
+	t.Parallel()
 	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
 	defer cancel()
 	start := time.Now()
-	err := retry(ctx, func() error {
+	err := retry(ctx, discardLogger(), func() error {
 		return secondaryLimitError(time.Hour)
 	})
 	if !errors.Is(err, context.DeadlineExceeded) {
@@ -167,6 +182,7 @@ func TestRetryStopsWhenContextExpiresDuringBackoff(t *testing.T) {
 }
 
 func TestRetryDelayPrimaryLimitIsNotRetryable(t *testing.T) {
+	t.Parallel()
 	for _, reset := range []time.Time{
 		time.Now().Add(-time.Hour),
 		time.Now().Add(-time.Second),
@@ -181,6 +197,7 @@ func TestRetryDelayPrimaryLimitIsNotRetryable(t *testing.T) {
 }
 
 func TestRetryDelaySecondaryLimit(t *testing.T) {
+	t.Parallel()
 	after := 3 * time.Second
 	delay, retryable := retryDelay(secondaryLimitError(after))
 	if !retryable {
@@ -240,6 +257,7 @@ func searchPage(w http.ResponseWriter, r *http.Request, items string, nextPage i
 // TestGithubSearchPaginates checks that pagination is driven purely by the
 // Link header now that it no longer shares a counter with the retry logic.
 func TestGithubSearchPaginates(t *testing.T) {
+	t.Parallel()
 	var searches int32
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if strings.Contains(r.URL.Path, "/users/") {
@@ -274,6 +292,7 @@ func TestGithubSearchPaginates(t *testing.T) {
 // rather than spinning, and must do it on the first response rather than
 // spending two more requests of an already exhausted quota.
 func TestGithubSearchTerminatesWhenRateLimited(t *testing.T) {
+	t.Parallel()
 	var searches int32
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		atomic.AddInt32(&searches, 1)
@@ -305,6 +324,7 @@ func TestGithubSearchTerminatesWhenRateLimited(t *testing.T) {
 }
 
 func TestGithubSearchHonoursTimeout(t *testing.T) {
+	t.Parallel()
 	const serverDelay = 10 * time.Second
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// honour cancellation, so closing the server does not sit out the
@@ -379,6 +399,7 @@ func base64File(content string) string {
 }
 
 func TestGithubSearchDecodesFileContent(t *testing.T) {
+	t.Parallel()
 	file := "package main\n\nfunc needle() {}\n"
 	srv := githubServer(t, codeResultJSON("src/f.go", "func needle() {}", 5, 11),
 		fileContents(base64File(file)))
@@ -413,6 +434,7 @@ func TestGithubSearchDecodesFileContent(t *testing.T) {
 // TestGithubFileURLAnchorMatchesLineno pins the anchor to the reported line
 // number across several positions in the file.
 func TestGithubFileURLAnchorMatchesLineno(t *testing.T) {
+	t.Parallel()
 	file := "one\ntwo\nthree needle\nfour\nfive needle\n"
 	srv := githubServer(t, codeResultJSON("src/f.go", "three needle", 6, 12),
 		fileContents(base64File(file)))
@@ -482,6 +504,7 @@ func largeFileServer(t *testing.T, size int, raw func(w http.ResponseWriter)) *h
 // The file is now downloaded through the raw media type, so the match gets
 // its line number and context like any other.
 func TestGithubSearchLargeFile(t *testing.T) {
+	t.Parallel()
 	file := strings.Repeat("filler line\n", 100000) + "before\nneedle here\nafter\n"
 	srv := largeFileServer(t, len(file), func(w http.ResponseWriter) { _, _ = fmt.Fprint(w, file) })
 	defer srv.Close()
@@ -509,6 +532,7 @@ func TestGithubSearchLargeFile(t *testing.T) {
 // file is beyond what is worth holding in memory, the match is still shown,
 // from the fragment.
 func TestGithubSearchLargeFileUnavailable(t *testing.T) {
+	t.Parallel()
 	for name, tt := range map[string]struct {
 		size    int
 		wantRaw bool
@@ -547,6 +571,7 @@ func TestGithubSearchLargeFileUnavailable(t *testing.T) {
 // TestGithubSearchNullContent covers a file entry whose content field is
 // absent, which also used to be dereferenced unconditionally.
 func TestGithubSearchNullContent(t *testing.T) {
+	t.Parallel()
 	srv := githubServer(t, codeResultJSON("src/f.go", "needle", 0, 6),
 		fileContents(`{"type":"file","encoding":"base64","name":"f.go","path":"src/f.go"}`))
 	defer srv.Close()
@@ -561,6 +586,7 @@ func TestGithubSearchNullContent(t *testing.T) {
 // TestGithubSearchDirectoryResponse covers GetContents returning a directory
 // listing, where the file content is nil but there is no error.
 func TestGithubSearchDirectoryResponse(t *testing.T) {
+	t.Parallel()
 	srv := githubServer(t, codeResultJSON("src", "needle", 0, 6),
 		fileContents(`[{"type":"file","name":"f.go","path":"src/f.go"}]`))
 	defer srv.Close()
@@ -577,6 +603,7 @@ func TestGithubSearchDirectoryResponse(t *testing.T) {
 // which Go evaluates eagerly, so these panicked whether or not debug logging
 // was enabled.
 func TestGithubSearchSparseResult(t *testing.T) {
+	t.Parallel()
 	for _, tt := range []struct {
 		name string
 		item string
@@ -625,9 +652,9 @@ func TestGithubSearchSparseResult(t *testing.T) {
 // with debug output disabled: the arguments are evaluated before Debugf is
 // ever called.
 func TestGithubDebugLoggingDoesNotPanic(t *testing.T) {
-	old := logrus.GetLevel()
-	logrus.SetLevel(logrus.DebugLevel)
-	defer logrus.SetLevel(old)
+	t.Parallel()
+	log, hook := logrustest.NewNullLogger()
+	log.SetLevel(logrus.DebugLevel)
 
 	srv := githubServer(t,
 		`{"name":"f.go","path":"src/f.go",
@@ -636,8 +663,18 @@ func TestGithubDebugLoggingDoesNotPanic(t *testing.T) {
 		fileContents(base64File("needle here\n")))
 	defer srv.Close()
 
-	if _, err := newGithubBackend(t, srv.URL).Search(context.Background(), "needle", SearchOptions{}); err != nil {
+	if _, err := newGithubBackend(t, srv.URL).Search(context.Background(), "needle", SearchOptions{Log: log}); err != nil {
 		t.Logf("search returned error (acceptable): %v", err)
+	}
+	// the debug output must have gone to this logger, or the test proves nothing
+	var debug int
+	for _, e := range hook.AllEntries() {
+		if e.Level == logrus.DebugLevel {
+			debug++
+		}
+	}
+	if debug == 0 {
+		t.Error("got no debug entries, want the search to log at debug level")
 	}
 }
 
@@ -645,6 +682,7 @@ func TestGithubDebugLoggingDoesNotPanic(t *testing.T) {
 // downloaded once rather than once per match. GitHub code search is rate
 // limited hard, so the request count matters more than the wall clock.
 func TestGithubCachesFileContent(t *testing.T) {
+	t.Parallel()
 	var fetches int32
 	item := `{
 		"name":"f.go","path":"src/f.go","sha":"x",
@@ -684,6 +722,7 @@ func TestGithubCachesFileContent(t *testing.T) {
 // TestGithubCacheIsPerFile makes sure the cache keys on the full path, so
 // results in different files still fetch their own content.
 func TestGithubCacheIsPerFile(t *testing.T) {
+	t.Parallel()
 	var fetches int32
 	seen := map[string]bool{}
 	var mu sync.Mutex
@@ -746,6 +785,7 @@ func pagedGithubServer(t *testing.T, pages, perPage int, searches, contents *int
 // code search API allows 10 requests a minute, and paging through every result
 // of a search that is about to be truncated spends it for nothing.
 func TestGithubLimitStopsPaging(t *testing.T) {
+	t.Parallel()
 	for _, tt := range []struct {
 		name                         string
 		limit                        uint
@@ -783,6 +823,7 @@ func TestGithubLimitStopsPaging(t *testing.T) {
 // TestGithubLimitDoesNotChangeTheLeadingResults checks that truncating early
 // returns the same results the unlimited search would have returned first.
 func TestGithubLimitDoesNotChangeTheLeadingResults(t *testing.T) {
+	t.Parallel()
 	var s1, c1, s2, c2 int32
 	full := pagedGithubServer(t, 3, 4, &s1, &c1)
 	defer full.Close()
@@ -810,6 +851,7 @@ func TestGithubLimitDoesNotChangeTheLeadingResults(t *testing.T) {
 // TestGithubNegativeContext is the regression test for a panic: a negative
 // LinesBefore or LinesAfter produced a reversed slice of the file lines.
 func TestGithubNegativeContext(t *testing.T) {
+	t.Parallel()
 	file := "one\ntwo\nthree needle\nfour\nfive\n"
 	for _, opts := range []SearchOptions{
 		{LinesBefore: -1},
@@ -838,6 +880,7 @@ func TestGithubNegativeContext(t *testing.T) {
 // TestGithubContextLines checks that the context still comes from the file
 // around the reported line.
 func TestGithubContextLines(t *testing.T) {
+	t.Parallel()
 	file := "one\ntwo\nthree needle\nfour\nfive\n"
 	srv := githubServer(t, codeResultJSON("src/f.go", "three needle", 6, 12),
 		fileContents(base64File(file)))
@@ -874,6 +917,7 @@ func githubItem(path, textMatches string) string {
 // property, whose fragment is not in the file, and that used to fail the whole
 // search.
 func TestGithubPathMatchIsSkipped(t *testing.T) {
+	t.Parallel()
 	var fetches int32
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
@@ -915,6 +959,7 @@ func TestGithubPathMatchIsSkipped(t *testing.T) {
 // to fail the whole search. The fragment itself is shown instead, and the
 // other file is unaffected.
 func TestGithubStaleIndex(t *testing.T) {
+	t.Parallel()
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case strings.Contains(r.URL.Path, "/search/code"):
@@ -962,6 +1007,7 @@ func TestGithubStaleIndex(t *testing.T) {
 // fetched costs only its own matches, and is requested once however many
 // matches it has.
 func TestGithubFailedFetchDegradesPerFile(t *testing.T) {
+	t.Parallel()
 	var missing int32
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
@@ -1004,6 +1050,7 @@ func TestGithubFailedFetchDegradesPerFile(t *testing.T) {
 // TestGithubRateLimitedFetchAbortsSearch: unlike a missing file, a rate limit
 // applies to every remaining file, so it must still end the search.
 func TestGithubRateLimitedFetchAbortsSearch(t *testing.T) {
+	t.Parallel()
 	srv := githubServer(t, codeResultJSON("src/f.go", "needle", 0, 6), func(w http.ResponseWriter) {
 		w.Header().Set("X-RateLimit-Limit", "5000")
 		w.Header().Set("X-RateLimit-Remaining", "0")
@@ -1023,6 +1070,7 @@ func TestGithubRateLimitedFetchAbortsSearch(t *testing.T) {
 // TestGithubInvalidIndices is the regression test for indices that were used
 // to slice the file content unchecked.
 func TestGithubInvalidIndices(t *testing.T) {
+	t.Parallel()
 	for _, indices := range []string{"[-1,3]", "[5,2]", "[0,1000]", "[1000,1001]"} {
 		t.Run(indices, func(t *testing.T) {
 			item := githubItem("src/f.go",
@@ -1049,6 +1097,7 @@ func TestGithubInvalidIndices(t *testing.T) {
 // broad search needs more requests than the code search quota allows in one
 // window, so it could never complete.
 func TestGithubSearchRequestsLargestPage(t *testing.T) {
+	t.Parallel()
 	var perPage atomic.Value
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if strings.Contains(r.URL.Path, "/search/code") {
@@ -1069,6 +1118,7 @@ func TestGithubSearchRequestsLargestPage(t *testing.T) {
 // TestGithubRateLimitKeepsEarlierPages: a rate limit part way through the
 // pages must not discard the hits that were already fetched.
 func TestGithubRateLimitKeepsEarlierPages(t *testing.T) {
+	t.Parallel()
 	var searches int32
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
@@ -1111,6 +1161,7 @@ func TestGithubRateLimitKeepsEarlierPages(t *testing.T) {
 // at a time, never more than githubDownloadConcurrency, and the results keep
 // the order of the search hits whatever order the downloads finish in.
 func TestGithubDownloadsInParallel(t *testing.T) {
+	t.Parallel()
 	const files = 40
 	var inFlight, peak int32
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -1162,6 +1213,7 @@ func TestGithubDownloadsInParallel(t *testing.T) {
 // TestGithubAbortStopsDownloads: when one file ends the search, the downloads
 // that are still in flight are cancelled and no later file is requested.
 func TestGithubAbortStopsDownloads(t *testing.T) {
+	t.Parallel()
 	const files = 60
 	var contents int32
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -1200,6 +1252,7 @@ func TestGithubAbortStopsDownloads(t *testing.T) {
 // have the shape of a real response for the query "già", where two multi-byte
 // characters come before the match, so byte and character offsets differ.
 func TestGithubHighlightAfterNonASCII(t *testing.T) {
+	t.Parallel()
 	const (
 		file     = "# Note\nperò è così: già scritto\nfine\n"
 		fragment = "però è così: già scritto"
@@ -1257,6 +1310,7 @@ func orgCheckServer(t *testing.T, items string, userStatus int, userRequests *in
 // that does not exist like a search without matches, so an empty result is
 // checked against the organization, and only an empty result.
 func TestGithubWarnsAboutUnknownOrg(t *testing.T) {
+	t.Parallel()
 	for _, tt := range []struct {
 		name         string
 		items        string
@@ -1273,11 +1327,9 @@ func TestGithubWarnsAboutUnknownOrg(t *testing.T) {
 			var userRequests int32
 			srv := orgCheckServer(t, tt.items, tt.userStatus, &userRequests)
 			defer srv.Close()
-			hook := logrustest.NewGlobal()
-			defer hook.Reset()
-			defer logrus.StandardLogger().ReplaceHooks(make(logrus.LevelHooks))
+			log, hook := logrustest.NewNullLogger()
 
-			results, err := newGithubBackend(t, srv.URL).Search(context.Background(), "needle", SearchOptions{})
+			results, err := newGithubBackend(t, srv.URL).Search(context.Background(), "needle", SearchOptions{Log: log})
 			if err != nil {
 				t.Fatalf("search failed: %v", err)
 			}

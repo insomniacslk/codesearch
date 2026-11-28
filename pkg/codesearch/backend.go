@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"time"
+
+	"github.com/sirupsen/logrus"
 )
 
 // Capability is an optional search feature. Backends declare the ones they
@@ -42,6 +44,20 @@ type SearchOptions struct {
 	// then returns, of which the results passed to OnResult are a prefix.
 	// When Search fails, the results already passed on stay valid.
 	OnResult func(Result)
+	// Log receives what the backend logs during the search: warnings about
+	// incomplete or degraded results, and debug output. When it is nil, the
+	// backend logs to logrus.StandardLogger(), whose level and output belong
+	// to the program.
+	Log logrus.FieldLogger
+}
+
+// logger returns the logger a search logs to: Log, or the standard logger
+// when there is none.
+func (o SearchOptions) logger() logrus.FieldLogger {
+	if o.Log != nil {
+		return o.Log
+	}
+	return logrus.StandardLogger()
 }
 
 // emit passes a result to OnResult, if there is one.
