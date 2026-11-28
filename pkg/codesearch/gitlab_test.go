@@ -8,7 +8,9 @@ import (
 	"net/http/httptest"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
+	"time"
 )
 
 // gitlabRecorder serves a canned GitLab API and records the paths it was
@@ -401,5 +403,116 @@ func TestGitlabNilNamespace(t *testing.T) {
 	}
 	if len(results) != 1 || results[0].Owner != "" {
 		t.Errorf("got %+v, want one result with no owner", results)
+	}
+}
+
+// gitlabProjectsServer serves one blob for each of `projects` projects, twice
+// over so that every project is needed by two blobs, and a project endpoint
+// that fails for the IDs in failing. It tracks how many project requests were
+// in flight at once and how often each project was requested.
+func gitlabProjectsServer(t *testing.T, projects int, failing map[int]bool, peak *int32, requests *sync.Map) *httptest.Server {
+	t.Helper()
+	var inFlight int32
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/search") {
+			var blobs []string
+			for round := range 2 {
+				for id := 1; id <= projects; id++ {
+					blobs = append(blobs, fmt.Sprintf(`{"basename":"f","data":"needle\n","path":"r%d.go",
+						"filename":"r%d.go","ref":"main","startline":1,"project_id":%d}`, round, round, id))
+				}
+			}
+			_, _ = fmt.Fprintf(w, "[%s]", strings.Join(blobs, ","))
+			return
+		}
+		var id int
+		if _, err := fmt.Sscanf(r.URL.Path, "/api/v4/projects/%d", &id); err != nil {
+			t.Errorf("unexpected request to %s", r.URL.Path)
+			http.NotFound(w, r)
+			return
+		}
+		count, _ := requests.LoadOrStore(id, new(int32))
+		atomic.AddInt32(count.(*int32), 1)
+		n := atomic.AddInt32(&inFlight, 1)
+		for {
+			p := atomic.LoadInt32(peak)
+			if n <= p || atomic.CompareAndSwapInt32(peak, p, n) {
+				break
+			}
+		}
+		// later projects answer sooner, so requests finish out of order
+		time.Sleep(time.Duration(10+(projects-id)%5*5) * time.Millisecond)
+		atomic.AddInt32(&inFlight, -1)
+		if failing[id] {
+			// not a 5xx, which the client would retry for several seconds
+			http.Error(w, `{"message":"404 Project Not Found"}`, http.StatusNotFound)
+			return
+		}
+		_, _ = fmt.Fprintf(w, `{"id":%d,"name":"p%d","path":"p%d","default_branch":"main",
+			"web_url":"https://gitlab.example.com/ns/p%d","namespace":{"path":"ns"}}`, id, id, id, id)
+	}))
+}
+
+// TestGitlabFetchesProjectsInParallel: projects are requested several at a
+// time, never more than gitlabProjectConcurrency, each of them once, and
+// every result still gets the project its blob belongs to, in blob order.
+func TestGitlabFetchesProjectsInParallel(t *testing.T) {
+	const projects = 30
+	var (
+		peak     int32
+		requests sync.Map
+	)
+	srv := gitlabProjectsServer(t, projects, nil, &peak, &requests)
+	defer srv.Close()
+
+	results, err := newGitlabBackend(t, srv.URL, BackendParams{}).Search(context.Background(), "needle", SearchOptions{})
+	if err != nil {
+		t.Fatalf("search failed: %v", err)
+	}
+	if len(results) != 2*projects {
+		t.Fatalf("got %d results, want %d", len(results), 2*projects)
+	}
+	for i, r := range results {
+		id, round := i%projects+1, i/projects
+		if want := fmt.Sprintf("p%d", id); r.RepoName != want || r.Path != fmt.Sprintf("r%d.go", round) {
+			t.Fatalf("result %d is %s in %s, want r%d.go in %s", i, r.Path, r.RepoName, round, want)
+		}
+		if want := fmt.Sprintf("https://gitlab.example.com/ns/p%d", id); r.RepoURL != want {
+			t.Errorf("result %d has repo URL %q, want %q", i, r.RepoURL, want)
+		}
+	}
+	for id := 1; id <= projects; id++ {
+		count, ok := requests.Load(id)
+		if !ok || atomic.LoadInt32(count.(*int32)) != 1 {
+			t.Errorf("project %d was not requested exactly once", id)
+		}
+	}
+	if got := atomic.LoadInt32(&peak); got < 2 || got > gitlabProjectConcurrency {
+		t.Errorf("got a peak of %d concurrent project requests, want between 2 and %d", got, gitlabProjectConcurrency)
+	}
+}
+
+// TestGitlabProjectFailureIsReported: a project that cannot be fetched fails
+// the search, as before, and names the first such project in blob order
+// however the requests happened to finish.
+func TestGitlabProjectFailureIsReported(t *testing.T) {
+	var (
+		peak     int32
+		requests sync.Map
+	)
+	srv := gitlabProjectsServer(t, 60, map[int]bool{3: true, 5: true}, &peak, &requests)
+	defer srv.Close()
+
+	_, err := newGitlabBackend(t, srv.URL, BackendParams{}).Search(context.Background(), "needle", SearchOptions{})
+	if err == nil {
+		t.Fatal("got nil error, want a failure")
+	}
+	if !strings.Contains(err.Error(), "project with ID 3") {
+		t.Errorf("got error %q, want it to name project 3", err)
+	}
+	var total int
+	requests.Range(func(_, _ any) bool { total++; return true })
+	if total == 60 {
+		t.Error("every project was requested, want the search to stop early after a failure")
 	}
 }
