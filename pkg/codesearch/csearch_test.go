@@ -656,3 +656,56 @@ func TestCsearchReadsIndexFormat2(t *testing.T) {
 		t.Errorf("got %+v, want one result for a.go line 1", results)
 	}
 }
+
+// TestCsearchParallelGrepKeepsOrder: files are grepped by several workers,
+// and the results must still come out in index order, with every match of a
+// file together, exactly as a serial run gives them.
+func TestCsearchParallelGrepKeepsOrder(t *testing.T) {
+	const fileCount = 300
+	files := make(map[string]string, fileCount)
+	for i := range fileCount {
+		content := "needle one\nfiller\nneedle two\n"
+		if i%3 == 0 {
+			// the index still proposes these, as they hold every trigram
+			content = "need\nedle\n"
+		}
+		files[fmt.Sprintf("d%02d/f%03d.go", i%7, i)] = content
+	}
+	indexFile, _ := newTestIndex(t, files)
+	b := newCsearchBackend(t, indexFile)
+
+	results, err := b.Search(context.Background(), "needle", SearchOptions{LinesAfter: 1})
+	if err != nil {
+		t.Fatalf("search failed: %v", err)
+	}
+	if want := (fileCount - fileCount/3) * 2; len(results) != want {
+		t.Fatalf("got %d results, want %d", len(results), want)
+	}
+	for i := 0; i < len(results); i += 2 {
+		first, second := results[i], results[i+1]
+		if first.Path != second.Path || first.Lineno != 1 || second.Lineno != 3 {
+			t.Fatalf("results %d and %d are %s:%d and %s:%d, want lines 1 and 3 of one file",
+				i, i+1, first.Path, first.Lineno, second.Path, second.Lineno)
+		}
+		if len(first.Context.After) != 1 || first.Context.After[0] != "filler" {
+			t.Fatalf("result %d has context %q, want [filler]", i, first.Context.After)
+		}
+		if i > 0 && results[i-1].Path >= first.Path {
+			t.Fatalf("result %d (%s) comes after %s, want index order", i, first.Path, results[i-1].Path)
+		}
+	}
+
+	// a limit must give the leading results of the full search
+	limited, err := b.Search(context.Background(), "needle", SearchOptions{Limit: 5, LinesAfter: 1})
+	if err != nil {
+		t.Fatalf("limited search failed: %v", err)
+	}
+	if len(limited) < 5 {
+		t.Fatalf("got %d limited results, want at least 5", len(limited))
+	}
+	for i, r := range limited {
+		if r.Path != results[i].Path || r.Lineno != results[i].Lineno {
+			t.Errorf("limited result %d is %s:%d, want %s:%d", i, r.Path, r.Lineno, results[i].Path, results[i].Lineno)
+		}
+	}
+}
