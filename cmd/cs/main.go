@@ -480,8 +480,10 @@ type searchOutcome struct {
 	backend  codesearch.Backend
 	results  codesearch.Results
 	selected []*codesearch.Result
-	// shown is how many results were printed
+	// shown is how many results were printed, and files how many distinct
+	// files they are in
 	shown    int
+	files    int
 	duration time.Duration
 	err      error
 }
@@ -551,6 +553,22 @@ type liveStream struct {
 	// received counts the results the backend passed on while it searched
 	received int
 	shown    int
+	// files are the files of the results that were shown
+	files map[resultFile]struct{}
+}
+
+// resultFile identifies the file of a result within one backend. The path
+// alone is not enough: it is relative to its repository, or to its root in a
+// csearch index.
+type resultFile struct{ repoURL, path string }
+
+// countFiles returns how many distinct files the results are in.
+func countFiles(results []*codesearch.Result) int {
+	files := make(map[resultFile]struct{}, len(results))
+	for _, res := range results {
+		files[resultFile{res.RepoURL, res.Path}] = struct{}{}
+	}
+	return len(files)
 }
 
 // add takes the next result of the backend. It is the backend's OnResult.
@@ -572,6 +590,10 @@ func (s *liveStream) take(res codesearch.Result) {
 		return
 	}
 	s.shown++
+	if s.files == nil {
+		s.files = make(map[resultFile]struct{})
+	}
+	s.files[resultFile{res.RepoURL, res.Path}] = struct{}{}
 	if s.live {
 		s.out.put(res)
 		return
@@ -710,6 +732,15 @@ func (p *livePrinter) shown(idx int) int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.shown
+}
+
+// files returns how many distinct files the printed results of a backend
+// are in.
+func (p *livePrinter) files(idx int) int {
+	s := p.streams[idx]
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return len(s.files)
 }
 
 // canPrintLive reports whether results can be printed before the search is
@@ -968,14 +999,17 @@ func runSearch(ctx context.Context, config *codesearch.Config, s settings, args 
 		Timeout:           s.timeout,
 		Limit:             backendLimit(s),
 	}, live)
-	totalResults := 0
+	// the backends have files of their own, so the totals simply add up
+	totalResults, totalFiles := 0, 0
 	for i := range outcomes {
 		o := &outcomes[i]
 		if live != nil {
 			// already printed, and that includes what a backend found
 			// before it failed
 			o.shown = live.shown(i)
+			o.files = live.files(i)
 			totalResults += o.shown
+			totalFiles += o.files
 			continue
 		}
 		if o.err != nil {
@@ -989,7 +1023,9 @@ func runSearch(ctx context.Context, config *codesearch.Config, s settings, args 
 			o.selected = selectResults(results, s.limit, matchFilename)
 		}
 		o.shown = len(o.selected)
+		o.files = countFiles(o.selected)
 		totalResults += o.shown
+		totalFiles += o.files
 	}
 	totalTime := time.Since(searchStart)
 
@@ -1013,7 +1049,7 @@ func runSearch(ctx context.Context, config *codesearch.Config, s settings, args 
 			_, _ = fmt.Fprintf(stderr, "Got %d results on %q in %s\n", o.shown, o.backend.Name(), o.duration)
 		}
 	}
-	_, _ = fmt.Fprintf(stderr, "Got %d total results in %s\n", totalResults, totalTime)
+	_, _ = fmt.Fprintf(stderr, "Got %d total results in %d files in %s\n", totalResults, totalFiles, totalTime)
 
 	// Results from the backends that did work are already printed, so a
 	// failure elsewhere is reported at the end and reflected in the exit
