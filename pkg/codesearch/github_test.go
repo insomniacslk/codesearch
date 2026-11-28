@@ -1021,3 +1021,91 @@ func TestGithubRateLimitKeepsEarlierPages(t *testing.T) {
 		t.Errorf("got %d search requests, want 3", got)
 	}
 }
+
+// TestGithubDownloadsInParallel: the files of a search are downloaded several
+// at a time, never more than githubDownloadConcurrency, and the results keep
+// the order of the search hits whatever order the downloads finish in.
+func TestGithubDownloadsInParallel(t *testing.T) {
+	const files = 40
+	var inFlight, peak int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.Contains(r.URL.Path, "/search/code"):
+			items := make([]string, 0, files)
+			for i := range files {
+				items = append(items, codeResultJSON(fmt.Sprintf("f%02d.go", i), "needle", 0, 6))
+			}
+			searchPage(w, r, strings.Join(items, ","), 0)
+		case strings.Contains(r.URL.Path, "/contents/"):
+			n := atomic.AddInt32(&inFlight, 1)
+			for {
+				p := atomic.LoadInt32(&peak)
+				if n <= p || atomic.CompareAndSwapInt32(&peak, p, n) {
+					break
+				}
+			}
+			// later files answer sooner, so downloads finish out of order
+			var i int
+			_, _ = fmt.Sscanf(r.URL.Path[strings.LastIndex(r.URL.Path, "/")+1:], "f%d.go", &i)
+			time.Sleep(time.Duration(20+(files-i)%7*5) * time.Millisecond)
+			atomic.AddInt32(&inFlight, -1)
+			_, _ = fmt.Fprint(w, base64File("needle\n"))
+		default:
+			t.Errorf("unexpected request to %s", r.URL.Path)
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+
+	results, err := newGithubBackend(t, srv.URL).Search(context.Background(), "needle", SearchOptions{})
+	if err != nil {
+		t.Fatalf("search failed: %v", err)
+	}
+	if len(results) != files {
+		t.Fatalf("got %d results, want %d", len(results), files)
+	}
+	for i, r := range results {
+		if want := fmt.Sprintf("f%02d.go", i); r.Path != want {
+			t.Fatalf("result %d is %q, want %q: results must keep the order of the hits", i, r.Path, want)
+		}
+	}
+	if got := atomic.LoadInt32(&peak); got < 2 || got > githubDownloadConcurrency {
+		t.Errorf("got a peak of %d concurrent downloads, want between 2 and %d", got, githubDownloadConcurrency)
+	}
+}
+
+// TestGithubAbortStopsDownloads: when one file ends the search, the downloads
+// that are still in flight are cancelled and no later file is requested.
+func TestGithubAbortStopsDownloads(t *testing.T) {
+	const files = 60
+	var contents int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.Contains(r.URL.Path, "/search/code"):
+			items := make([]string, 0, files)
+			for i := range files {
+				items = append(items, codeResultJSON(fmt.Sprintf("f%02d.go", i), "needle", 0, 6))
+			}
+			searchPage(w, r, strings.Join(items, ","), 0)
+		case strings.Contains(r.URL.Path, "/contents/"):
+			atomic.AddInt32(&contents, 1)
+			w.Header().Set("X-RateLimit-Limit", "5000")
+			w.Header().Set("X-RateLimit-Remaining", "0")
+			w.Header().Set("X-RateLimit-Reset", strconv.FormatInt(time.Now().Add(time.Hour).Unix(), 10))
+			w.WriteHeader(http.StatusForbidden)
+			_, _ = fmt.Fprint(w, `{"message":"API rate limit exceeded"}`)
+		default:
+			t.Errorf("unexpected request to %s", r.URL.Path)
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+
+	_, err := newGithubBackend(t, srv.URL).Search(context.Background(), "needle", SearchOptions{})
+	if err == nil {
+		t.Fatal("got nil error, want a rate limit failure")
+	}
+	if got := atomic.LoadInt32(&contents); got > githubDownloadConcurrency {
+		t.Errorf("got %d content requests, want at most %d", got, githubDownloadConcurrency)
+	}
+}

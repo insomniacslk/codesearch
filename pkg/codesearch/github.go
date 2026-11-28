@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/url"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/google/go-github/v76/github"
@@ -209,29 +210,114 @@ type githubFile struct {
 	err   error
 }
 
-// fileContent fetches a file, remembering what it downloaded in cache. Code
-// search reports every match in a file as a separate text match, and the
-// search API is rate limited hard enough that re-downloading the same file
-// once per match is the difference between a search completing and hitting the
-// limit.
-func (g *Github) fileContent(ctx context.Context, client *github.Client, cache map[string]*githubFile, owner, repo, path string) *githubFile {
-	fullPath := fmt.Sprintf("%s/%s/%s", owner, repo, path)
-	if f, ok := cache[fullPath]; ok {
-		logrus.Debugf("Using cached content for %q", fullPath)
-		return f
-	}
-	text, err := g.fetchFile(ctx, client, owner, repo, path)
-	f := &githubFile{text: text, err: err}
-	if err == nil {
-		// split once per file rather than once per match
-		f.lines = strings.Split(text, "\n")
-	}
-	cache[fullPath] = f
-	return f
+// githubDownloadConcurrency is how many files are downloaded at once. It is
+// deliberately modest: GitHub answers a burst of concurrent requests with a
+// secondary rate limit.
+const githubDownloadConcurrency = 8
+
+// githubFileRef identifies a file to download.
+type githubFileRef struct {
+	owner, repo, path string
 }
 
-func (g *Github) fetchFile(ctx context.Context, client *github.Client, owner, repo, path string) (string, error) {
-	fullPath := fmt.Sprintf("%s/%s/%s", owner, repo, path)
+func (r githubFileRef) String() string {
+	// a GitHub identifier, not a file system path
+	return fmt.Sprintf("%s/%s/%s", r.owner, r.repo, r.path)
+}
+
+// githubDownload is a file download that may still be in flight. file is set
+// before done is closed.
+type githubDownload struct {
+	done chan struct{}
+	file *githubFile
+}
+
+// githubDownloader downloads the files of a search ahead of the loop that
+// turns hits into results. Code search reports every match in a file as a
+// separate text match, and the API is rate limited hard enough that each file
+// must be downloaded once only, so a download is shared by every match in the
+// file. All methods must be called from the same goroutine.
+type githubDownloader struct {
+	ctx    context.Context
+	cancel context.CancelFunc
+	wg     sync.WaitGroup
+	fetch  func(ctx context.Context, ref githubFileRef) (string, error)
+	// queue is every file in the order the results need them, without
+	// duplicates; queue[:started] have been requested
+	queue     []githubFileRef
+	started   int
+	downloads map[githubFileRef]*githubDownload
+}
+
+func newGithubDownloader(ctx context.Context, queue []githubFileRef, fetch func(context.Context, githubFileRef) (string, error)) *githubDownloader {
+	ctx, cancel := context.WithCancel(ctx)
+	return &githubDownloader{
+		ctx:       ctx,
+		cancel:    cancel,
+		fetch:     fetch,
+		queue:     queue,
+		downloads: make(map[githubFileRef]*githubDownload, len(queue)),
+	}
+}
+
+// startUpTo requests every file of the queue before index end that was not
+// requested yet.
+func (d *githubDownloader) startUpTo(end int) {
+	for ; d.started < min(end, len(d.queue)); d.started++ {
+		ref := d.queue[d.started]
+		dl := &githubDownload{done: make(chan struct{})}
+		d.downloads[ref] = dl
+		d.wg.Add(1)
+		go func() {
+			defer d.wg.Done()
+			defer close(dl.done)
+			text, err := d.fetch(d.ctx, ref)
+			f := &githubFile{text: text, err: err}
+			if err == nil {
+				// split once per file rather than once per match
+				f.lines = strings.Split(text, "\n")
+			}
+			dl.file = f
+		}()
+	}
+}
+
+// get waits for the download of a file that startUpTo requested.
+func (d *githubDownloader) get(ref githubFileRef) *githubFile {
+	dl, ok := d.downloads[ref]
+	if !ok {
+		return &githubFile{err: fmt.Errorf("internal error: %q was never requested", ref)}
+	}
+	<-dl.done
+	return dl.file
+}
+
+// stop cancels the downloads still in flight and waits for them to end.
+func (d *githubDownloader) stop() {
+	d.cancel()
+	d.wg.Wait()
+}
+
+// githubNeedsFile reports whether a text match is located in the file content,
+// and so needs the file. A query that matches the file path yields a text
+// match whose fragment is the path, which is not in the file content. A
+// missing property is taken as content, which is what it is in practice.
+func githubNeedsFile(tm *github.TextMatch) bool {
+	p := tm.GetProperty()
+	return p == "" || p == "content"
+}
+
+func githubRef(res *github.CodeResult) githubFileRef {
+	return githubFileRef{
+		owner: res.GetRepository().GetOwner().GetLogin(),
+		repo:  res.GetRepository().GetName(),
+		path:  res.GetPath(),
+	}
+}
+
+func (g *Github) fetchFile(ctx context.Context, client *github.Client, ref githubFileRef) (string, error) {
+	owner, repo, path := ref.owner, ref.repo, ref.path
+	fullPath := ref.String()
 	var rc *github.RepositoryContent
 	// The client remembers the last rate limit per category and refuses later
 	// requests in that category without sending them. It derives the category
@@ -300,11 +386,42 @@ func githubMatchIndices(match *github.Match, fragment string) (int, int, bool) {
 
 func (g *Github) toResult(ctx context.Context, client *github.Client, csresults []*github.CodeResult, opts SearchOptions) (Results, error) {
 	var results Results
-	contents := make(map[string]*githubFile)
+	// the files to download, in the order the loop below needs them, and the
+	// position of the file of each hit in that order
+	var queue []githubFileRef
+	queued := make(map[githubFileRef]int)
+	for _, res := range csresults {
+		ref := githubRef(res)
+		if _, ok := queued[ref]; ok {
+			continue
+		}
+		for _, tm := range res.TextMatches {
+			if githubNeedsFile(tm) {
+				queued[ref] = len(queue)
+				queue = append(queue, ref)
+				break
+			}
+		}
+	}
+	downloader := newGithubDownloader(ctx, queue, func(ctx context.Context, ref githubFileRef) (string, error) {
+		return g.fetchFile(ctx, client, ref)
+	})
+	defer downloader.stop()
 	for _, res := range csresults {
 		// each hit costs a file download, so stop as soon as there are enough
 		if opts.Limit > 0 && uint(len(results)) >= opts.Limit {
 			break
+		}
+		ref := githubRef(res)
+		if pos, ok := queued[ref]; ok {
+			// Download this file and the ones after it at the same time. A
+			// file gives at least one result as a rule, so with a limit no
+			// more files are requested ahead than results are still missing.
+			ahead := githubDownloadConcurrency
+			if opts.Limit > 0 {
+				ahead = min(ahead, int(opts.Limit)-len(results))
+			}
+			downloader.startUpTo(pos + ahead)
 		}
 		logrus.Debugf("Result:\n")
 		logrus.Debugf("  Name: %s:\n", res.GetName())
@@ -329,18 +446,12 @@ func (g *Github) toResult(ctx context.Context, client *github.Client, csresults 
 			logrus.Debugf("        ObjectType: %s\n", tm.GetObjectType())
 			logrus.Debugf("        Property: %s\n", tm.GetProperty())
 			logrus.Debugf("        Fragment: %s\n", tm.GetFragment())
-			// a query that matches the file path yields a text match whose
-			// fragment is the path, which is not in the file content. A
-			// missing property is taken as content, which is what it is in
-			// practice.
-			if p := tm.GetProperty(); p != "" && p != "content" {
-				logrus.Debugf("Skipping text match on property %q", p)
+			if !githubNeedsFile(tm) {
+				logrus.Debugf("Skipping text match on property %q", tm.GetProperty())
 				continue
 			}
 			fragment := tm.GetFragment()
-			f := g.fileContent(ctx, client, contents,
-				base.Owner, base.RepoName, base.Path,
-			)
+			f := downloader.get(ref)
 			fragmentStart := -1
 			if f.err != nil {
 				if githubAbortsSearch(ctx, f.err) {
