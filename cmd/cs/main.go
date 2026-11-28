@@ -506,6 +506,10 @@ func runSearchesLive(ctx context.Context, backends []codesearch.Backend, searchS
 		r := <-ch
 		outcomes[r.idx] = r.outcome
 	}
+	if live != nil {
+		// the summary on stderr comes after the last result
+		live.close()
+	}
 	return outcomes
 }
 
@@ -513,7 +517,7 @@ func runSearchesLive(ctx context.Context, backends []codesearch.Backend, searchS
 // as selectResults, one result at a time.
 type liveStream struct {
 	mu            sync.Mutex
-	w             io.Writer
+	out           *liveWriter
 	limit         uint
 	matchFilename *regexp.Regexp
 	// live says the results go straight to w; otherwise they wait in pending
@@ -545,7 +549,7 @@ func (s *liveStream) take(res codesearch.Result) {
 	}
 	s.shown++
 	if s.live {
-		printResult(s.w, &res, false)
+		s.out.put(res)
 		return
 	}
 	s.pending = append(s.pending, res)
@@ -566,11 +570,68 @@ func (s *liveStream) finish(results codesearch.Results) {
 func (s *liveStream) goLive() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	for i := range s.pending {
-		printResult(s.w, &s.pending[i], false)
+	for _, res := range s.pending {
+		s.out.put(res)
 	}
 	s.pending = nil
 	s.live = true
+}
+
+// liveWriter prints results from a goroutine of its own. The backends hand
+// their results over without waiting for the output: stdout can be slow, or
+// stand still for as long as a pager is not scrolled, and a search that waited
+// for it would run into --timeout through no fault of the backend.
+type liveWriter struct {
+	w      io.Writer
+	mu     sync.Mutex
+	wake   *sync.Cond
+	queue  []codesearch.Result
+	closed bool
+	done   chan struct{}
+}
+
+func newLiveWriter(w io.Writer) *liveWriter {
+	q := &liveWriter{w: w, done: make(chan struct{})}
+	q.wake = sync.NewCond(&q.mu)
+	go q.run()
+	return q
+}
+
+// put queues a result for printing. It does not block on the output.
+func (q *liveWriter) put(res codesearch.Result) {
+	q.mu.Lock()
+	q.queue = append(q.queue, res)
+	q.mu.Unlock()
+	q.wake.Signal()
+}
+
+// close prints what is still queued and stops the goroutine.
+func (q *liveWriter) close() {
+	q.mu.Lock()
+	q.closed = true
+	q.mu.Unlock()
+	q.wake.Signal()
+	<-q.done
+}
+
+func (q *liveWriter) run() {
+	defer close(q.done)
+	for {
+		q.mu.Lock()
+		for len(q.queue) == 0 && !q.closed {
+			q.wake.Wait()
+		}
+		batch := q.queue
+		q.queue = nil
+		q.mu.Unlock()
+		if len(batch) == 0 {
+			// closed, and nothing left
+			return
+		}
+		for i := range batch {
+			printResult(q.w, &batch[i], false)
+		}
+	}
 }
 
 // livePrinter prints results while the searches are still running, instead
@@ -579,6 +640,7 @@ func (s *liveStream) goLive() {
 // arrive, and those of each later backend are held back until every backend
 // before it has finished.
 type livePrinter struct {
+	out     *liveWriter
 	streams []*liveStream
 	mu      sync.Mutex
 	done    []bool
@@ -587,9 +649,9 @@ type livePrinter struct {
 }
 
 func newLivePrinter(w io.Writer, backends int, limit uint, matchFilename *regexp.Regexp) *livePrinter {
-	p := &livePrinter{done: make([]bool, backends)}
+	p := &livePrinter{out: newLiveWriter(w), done: make([]bool, backends)}
 	for range backends {
-		p.streams = append(p.streams, &liveStream{w: w, limit: limit, matchFilename: matchFilename})
+		p.streams = append(p.streams, &liveStream{out: p.out, limit: limit, matchFilename: matchFilename})
 	}
 	if backends > 0 {
 		p.streams[0].goLive()
@@ -610,6 +672,12 @@ func (p *livePrinter) finish(idx int, results codesearch.Results) {
 			p.streams[p.head].goLive()
 		}
 	}
+}
+
+// close waits until every result is on the output. No result may be added
+// after it.
+func (p *livePrinter) close() {
+	p.out.close()
 }
 
 // shown returns how many results of a backend were printed.

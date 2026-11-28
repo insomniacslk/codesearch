@@ -237,3 +237,60 @@ func TestCanPrintLive(t *testing.T) {
 	}
 	resetConfigState(t)
 }
+
+// blockedWriter accepts nothing until it is released, like the stdout of a
+// cs whose pager is not being scrolled.
+type blockedWriter struct {
+	release chan struct{}
+	lockedBuffer
+}
+
+func (b *blockedWriter) Write(p []byte) (int, error) {
+	<-b.release
+	return b.lockedBuffer.Write(p)
+}
+
+// returningBackend passes all of its results on and says when Search is over.
+type returningBackend struct {
+	streamingBackend
+	returned chan struct{}
+}
+
+func (r *returningBackend) Search(ctx context.Context, q string, opts codesearch.SearchOptions) (codesearch.Results, error) {
+	defer close(r.returned)
+	return r.streamingBackend.Search(ctx, q, opts)
+}
+
+// TestLivePrinterDoesNotHoldUpTheSearch: a backend hands its results over
+// without waiting for the output. An output that stands still must not keep
+// the search running, where it would count against --timeout.
+func TestLivePrinterDoesNotHoldUpTheSearch(t *testing.T) {
+	disableColor(t)
+	b := &returningBackend{
+		streamingBackend: streamingBackend{name: "b", results: namedResults("b", "a.go", "b.go", "c.go"), early: 3},
+		returned:         make(chan struct{}),
+	}
+	out := &blockedWriter{release: make(chan struct{})}
+	live := newLivePrinter(out, 1, 0, nil)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		runSearchesLive(context.Background(), []codesearch.Backend{b}, "needle", codesearch.SearchOptions{}, live)
+	}()
+
+	select {
+	case <-b.returned:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the search is still running: it waits for the blocked output")
+	}
+	select {
+	case <-done:
+		t.Fatal("runSearchesLive returned before the results were printed")
+	case <-time.After(20 * time.Millisecond):
+	}
+	close(out.release)
+	<-done
+	if got, want := out.String(), printedAtTheEnd([]*streamingBackend{&b.streamingBackend}, 0, nil); got != want {
+		t.Errorf("got output:\n%s\nwant:\n%s", got, want)
+	}
+}
