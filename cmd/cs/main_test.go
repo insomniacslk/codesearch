@@ -1565,7 +1565,7 @@ func TestRunSearchEndToEnd(t *testing.T) {
 	if got := stdout.String(); got != want {
 		t.Errorf("stdout:\ngot  %q\nwant %q", got, want)
 	}
-	for _, want := range []string{`Searching "needle" on ["local"]`, "Got 2 total results"} {
+	for _, want := range []string{`Searching "needle" on ["local"]`, "Got 2 total results in 2 files in "} {
 		if !strings.Contains(stderr.String(), want) {
 			t.Errorf("stderr does not contain %q:\n%s", want, stderr.String())
 		}
@@ -1589,7 +1589,7 @@ func TestRunSearchPartialFailure(t *testing.T) {
 	if want := "local:" + root + ":a.go ()\n\n3: func needle() {}\n\n"; stdout.String() != want {
 		t.Errorf("stdout:\ngot  %q\nwant %q", stdout.String(), want)
 	}
-	for _, want := range []string{"Got 1 total results", "\n1 of 2 backends failed:\n  broken: index "} {
+	for _, want := range []string{"Got 1 total results in 1 files in ", "\n1 of 2 backends failed:\n  broken: index "} {
 		if !strings.Contains(stderr.String(), want) {
 			t.Errorf("stderr does not contain %q:\n%s", want, stderr.String())
 		}

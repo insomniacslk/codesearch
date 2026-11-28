@@ -290,3 +290,38 @@ func TestLivePrinterDoesNotHoldUpTheSearch(t *testing.T) {
 		t.Errorf("got output:\n%s\nwant:\n%s", got, want)
 	}
 }
+
+// TestFileCount: the summary counts the distinct files of the results that
+// were printed. Several results in one file count once, the same path in two
+// repositories counts twice, and results that were not printed do not count.
+// Both ways of printing must agree.
+func TestFileCount(t *testing.T) {
+	disableColor(t)
+	results := namedResults("b", "a.go", "a.go", "b.go", "a.go", "c.md", "b.go", "d.go")
+	// the same path as the first result, in another repository
+	results[3].RepoURL = "https://example.com/other"
+	for _, tt := range []struct {
+		name  string
+		limit uint
+		match *regexp.Regexp
+		want  int
+	}{
+		{"everything", 0, nil, 5},
+		{"limit cuts before the later files", 3, nil, 2},
+		{"file name filter", 0, regexp.MustCompile(`\.go$`), 4},
+		{"nothing printed", 0, regexp.MustCompile(`\.rs$`), 0},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := countFiles(selectResults(results, tt.limit, tt.match)); got != tt.want {
+				t.Errorf("countFiles: got %d files, want %d", got, tt.want)
+			}
+			b := &streamingBackend{name: "b", results: results, early: 4}
+			var out lockedBuffer
+			live := newLivePrinter(&out, 1, tt.limit, tt.match)
+			runSearchesLive(context.Background(), []codesearch.Backend{b}, "needle", codesearch.SearchOptions{}, live)
+			if got := live.files(0); got != tt.want {
+				t.Errorf("live: got %d files, want %d", got, tt.want)
+			}
+		})
+	}
+}
