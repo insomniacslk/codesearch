@@ -115,7 +115,7 @@ func (g *Gitlab) Search(ctx context.Context, searchString string, opts SearchOpt
 	if u.Path == "" {
 		u.Path = "/api/v4"
 	}
-	client, err := gitlab.NewClient(g.token, gitlab.WithBaseURL(u.String()))
+	client, err := gitlab.NewClient(g.token, append([]gitlab.ClientOptionFunc{gitlab.WithBaseURL(u.String())}, gitlabClientOptions...)...)
 	if err != nil {
 		return nil, fmt.Errorf("failed to set up Gitlab client: %w", err)
 	}
@@ -191,9 +191,13 @@ func (g *Gitlab) toResult(client *gitlab.Client, withCtx gitlab.RequestOptionFun
 		logrus.Debugf("  Startline: %d", blob.Startline)
 		logrus.Debugf("  ProjectID: %d", blob.ProjectID)
 
-		logrus.Debugf("  Project Name: %s", projects[blob.ProjectID].Name)
+		project, ok := projects[blob.ProjectID]
+		if !ok {
+			// a rate limit stopped fetchProjects before it got to this one
+			continue
+		}
+		logrus.Debugf("  Project Name: %s", project.Name)
 
-		project := projects[blob.ProjectID]
 		// a project without a namespace should not happen, but the field is
 		// a pointer and a crash would lose every other result
 		var owner string
@@ -235,6 +239,10 @@ func (g *Gitlab) toResult(client *gitlab.Client, withCtx gitlab.RequestOptionFun
 	return results, nil
 }
 
+// gitlabClientOptions are extra options for the GitLab client. The tests use
+// them to shorten the pauses between the client's own retries.
+var gitlabClientOptions []gitlab.ClientOptionFunc
+
 // gitlabIsRateLimit reports whether a request failed because GitLab is rate
 // limiting the token. The client retries such a request a few times itself,
 // so this is what is left when that did not help.
@@ -250,7 +258,9 @@ func gitlabIsRateLimit(response *gitlab.Response, err error) bool {
 // gitlabProjectConcurrency is how many projects are requested at once.
 const gitlabProjectConcurrency = 8
 
-// fetchProjects gets the project of every blob. A blob only carries the ID of
+// fetchProjects gets the project of every blob. When a rate limit stops it
+// part way, it returns the projects it has, and the map does not hold the
+// others. A blob only carries the ID of
 // its project, and the URL, name and default branch that a result needs take
 // one request per project; these are independent, so they are made in
 // parallel. The error returned is the one of the first project in blob order
@@ -266,6 +276,7 @@ func (g *Gitlab) fetchProjects(client *gitlab.Client, withCtx gitlab.RequestOpti
 	}
 	fetched := make([]*gitlab.Project, len(ids))
 	errs := make([]error, len(ids))
+	rateLimited := make([]bool, len(ids))
 	var (
 		wg     sync.WaitGroup
 		failed atomic.Bool
@@ -286,6 +297,7 @@ func (g *Gitlab) fetchProjects(client *gitlab.Client, withCtx gitlab.RequestOpti
 			logrus.Debugf("Projects.GetProject response: %+v", response)
 			if err != nil {
 				errs[i] = fmt.Errorf("failed to get project with ID %d: %w", id, err)
+				rateLimited[i] = gitlabIsRateLimit(response, err)
 				failed.Store(true)
 				return
 			}
@@ -295,10 +307,21 @@ func (g *Gitlab) fetchProjects(client *gitlab.Client, withCtx gitlab.RequestOpti
 	wg.Wait()
 	projects := make(map[int64]*gitlab.Project, len(ids))
 	for i, id := range ids {
-		if errs[i] != nil {
-			return nil, errs[i]
+		if fetched[i] != nil {
+			projects[id] = fetched[i]
 		}
-		projects[id] = fetched[i]
+	}
+	for i := range ids {
+		if errs[i] == nil {
+			continue
+		}
+		if rateLimited[i] && len(projects) > 0 {
+			// the same reasoning as for the search pages: what was fetched
+			// is still good. The caller drops the blobs of the other projects.
+			logrus.Warnf("Results are incomplete, rate limited after %d of %d projects: %v", len(projects), len(ids), errs[i])
+			break
+		}
+		return nil, errs[i]
 	}
 	return projects, nil
 }

@@ -11,7 +11,17 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	gitlab "gitlab.com/gitlab-org/api/client-go"
 )
+
+func init() {
+	// The client retries a failed request several times, with pauses that add
+	// up to seconds. The tests want the retries, not the pauses.
+	gitlabClientOptions = []gitlab.ClientOptionFunc{
+		gitlab.WithCustomRetryWaitMinMax(time.Millisecond, time.Millisecond),
+	}
+}
 
 // gitlabRecorder serves a canned GitLab API and records the paths it was
 // asked for, so a test can assert which endpoints were reached.
@@ -550,8 +560,6 @@ func gitlabRateLimitedServer(t *testing.T, good int, searches *int32) *httptest.
 // TestGitlabRateLimitKeepsEarlierPages: a rate limit part way through the
 // pages must not discard the hits that were already fetched.
 func TestGitlabRateLimitKeepsEarlierPages(t *testing.T) {
-	// the client retries a 429 for a few seconds before it gives up
-	t.Parallel()
 	var searches int32
 	srv := gitlabRateLimitedServer(t, 2, &searches)
 	defer srv.Close()
@@ -568,8 +576,6 @@ func TestGitlabRateLimitKeepsEarlierPages(t *testing.T) {
 // TestGitlabRateLimitOnFirstPage: with nothing fetched there is nothing to
 // keep, and an empty result would look like "no matches".
 func TestGitlabRateLimitOnFirstPage(t *testing.T) {
-	// the client retries a 429 for a few seconds before it gives up
-	t.Parallel()
 	var searches int32
 	srv := gitlabRateLimitedServer(t, 0, &searches)
 	defer srv.Close()
@@ -577,5 +583,60 @@ func TestGitlabRateLimitOnFirstPage(t *testing.T) {
 	_, err := newGitlabBackend(t, srv.URL, BackendParams{}).Search(context.Background(), "needle", SearchOptions{})
 	if err == nil {
 		t.Fatal("got nil error, want a rate limit failure")
+	}
+}
+
+// TestGitlabRateLimitOnProjectsKeepsTheRest: a rate limit while the projects
+// are fetched keeps the results of the projects that were fetched, and drops
+// only the blobs of the others. With no project at all it is an error.
+func TestGitlabRateLimitOnProjectsKeepsTheRest(t *testing.T) {
+	for name, tt := range map[string]struct {
+		limited   map[int]bool
+		wantPaths []string
+		wantErr   bool
+	}{
+		"one project limited":   {limited: map[int]bool{2: true}, wantPaths: []string{"p1.go", "p3.go"}},
+		"every project limited": {limited: map[int]bool{1: true, 2: true, 3: true}, wantErr: true},
+	} {
+		t.Run(name, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if strings.HasSuffix(r.URL.Path, "/search") {
+					var blobs []string
+					for id := 1; id <= 3; id++ {
+						blobs = append(blobs, fmt.Sprintf(`{"basename":"f","data":"needle\n","path":"p%d.go",
+							"filename":"p%d.go","ref":"main","startline":1,"project_id":%d}`, id, id, id))
+					}
+					_, _ = fmt.Fprintf(w, "[%s]", strings.Join(blobs, ","))
+					return
+				}
+				var id int
+				if _, err := fmt.Sscanf(r.URL.Path, "/api/v4/projects/%d", &id); err != nil {
+					t.Errorf("unexpected request to %s", r.URL.Path)
+					http.NotFound(w, r)
+					return
+				}
+				if tt.limited[id] {
+					http.Error(w, `{"message":"429 Too Many Requests"}`, http.StatusTooManyRequests)
+					return
+				}
+				_, _ = fmt.Fprintf(w, `{"id":%d,"name":"p%d","path":"p%d","default_branch":"main",
+					"web_url":"https://gitlab.example.com/ns/p%d","namespace":{"path":"ns"}}`, id, id, id, id)
+			}))
+			defer srv.Close()
+
+			results, err := newGitlabBackend(t, srv.URL, BackendParams{}).Search(context.Background(), "needle", SearchOptions{})
+			if tt.wantErr {
+				if err == nil {
+					t.Fatal("got nil error, want a rate limit failure")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("search failed: %v", err)
+			}
+			if got := resultPaths(results); !equalLines(got, tt.wantPaths) {
+				t.Errorf("got %q, want %q", got, tt.wantPaths)
+			}
+		})
 	}
 }
