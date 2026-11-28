@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"sort"
 	"strings"
 	"sync"
@@ -912,6 +913,75 @@ func TestCsearchFormat1CorruptOffsets(t *testing.T) {
 		_, err := newCsearchBackend(t, path).Search(context.Background(), "needle", SearchOptions{})
 		if err == nil || !strings.Contains(err.Error(), "corrupt") {
 			t.Errorf("field %d: got error %v, want the index reported as corrupt", field, err)
+		}
+	}
+}
+
+func TestRootOf(t *testing.T) {
+	t.Parallel()
+	roots := []string{"/src/repo", "/src/repo/vendor/lib", "/other/"}
+	for _, tc := range []struct{ name, want string }{
+		{"/src/repo/a.go", "/src/repo"},
+		{"/src/repo/vendor/lib/b.go", "/src/repo/vendor/lib"},
+		{"/other/c.go", "/other/"},
+		// the root that cindex dropped behind "/src/repo"
+		{"/src/repo-mail/docs/d.md", "/src/repo-mail"},
+		{"/src/repo2/e.go", "/src/repo2"},
+		// a file directly next to a root has no component to extend to
+		{"/src/repo.txt", "/src"},
+		{"/elsewhere/f.go", "/elsewhere"},
+	} {
+		if got := rootOf(roots, tc.name); got != tc.want {
+			t.Errorf("rootOf(%q) = %q, want %q", tc.name, got, tc.want)
+		}
+	}
+}
+
+// TestCsearchFileOutsideRoots covers an index as cindex leaves it after a
+// merge: the files of "repo-mail" are there, but its root is not, because the
+// root "repo" before it is a string prefix. Such a file failed the search.
+func TestCsearchFileOutsideRoots(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	kept := filepath.Join(dir, "repo", "a.go")
+	dropped := filepath.Join(dir, "repo-mail", "docs", "b.go")
+	for _, file := range []string{kept, dropped} {
+		if err := os.MkdirAll(filepath.Dir(file), 0o755); err != nil {
+			t.Fatalf("failed to create dir: %v", err)
+		}
+		if err := os.WriteFile(file, []byte("needle\n"), 0o644); err != nil {
+			t.Fatalf("failed to write: %v", err)
+		}
+	}
+	indexFile := filepath.Join(t.TempDir(), "csearchindex")
+	writeTestIndex(t, indexFile, func(iw *index.IndexWriter) {
+		iw.AddRoots([]index.Path{index.MakePath(filepath.Join(dir, "repo"))})
+		for _, file := range []string{kept, dropped} {
+			if err := iw.AddFile(file); err != nil {
+				t.Errorf("failed to index %q: %v", file, err)
+			}
+		}
+	})
+
+	want := map[string]string{
+		"a.go":      "file://" + filepath.Join(dir, "repo"),
+		"docs/b.go": "file://" + filepath.Join(dir, "repo-mail"),
+	}
+	for _, opts := range []SearchOptions{{}, {SearchInFilenames: true}} {
+		pattern := "needle"
+		if opts.SearchInFilenames {
+			pattern = `\.go$`
+		}
+		results, err := newCsearchBackend(t, indexFile).Search(context.Background(), pattern, opts)
+		if err != nil {
+			t.Fatalf("search (filenames=%v) failed: %v", opts.SearchInFilenames, err)
+		}
+		got := make(map[string]string)
+		for _, r := range results {
+			got[r.Path] = r.RepoURL
+		}
+		if !reflect.DeepEqual(got, want) {
+			t.Errorf("filenames=%v: got %v, want %v", opts.SearchInFilenames, got, want)
 		}
 	}
 }

@@ -290,10 +290,7 @@ func (g *Csearch) searchFilenames(ctx context.Context, ix *index.Index, re *gore
 			}
 		}
 		name := path.String()
-		indexedPath := longestRoot(roots, name)
-		if indexedPath == "" {
-			return nil, fmt.Errorf("no indexed path found for %q", name)
-		}
+		indexedPath := rootOf(roots, name)
 		shortName := removePathPrefix(name, indexedPath)
 		if !re.MatchString(shortName) {
 			continue
@@ -322,6 +319,32 @@ func longestRoot(roots []string, name string) string {
 		}
 	}
 	return root
+}
+
+// rootOf returns the indexed root that holds the file name. An index can hold
+// a file under none of its roots: when cindex merges a new index into an
+// existing one, it drops a root that has the root before it as a string
+// prefix, so "/src/repo-mail" disappears behind "/src/repo" while its files
+// stay in the index. Such a root is rebuilt from the file name: it is the root
+// that is a string prefix of the name, extended to the end of the path
+// component. A file that no root explains at all gets its directory.
+func rootOf(roots []string, name string) string {
+	if root := longestRoot(roots, name); root != "" {
+		return root
+	}
+	var prefix string
+	for _, p := range roots {
+		p = strings.TrimRight(p, "/")
+		if strings.HasPrefix(name, p) && len(p) > len(prefix) {
+			prefix = p
+		}
+	}
+	if prefix != "" {
+		if end := strings.IndexByte(name[len(prefix):], '/'); end > 0 {
+			return name[:len(prefix)+end]
+		}
+	}
+	return filepath.Dir(name)
 }
 
 // csearchJob is the grep of one candidate file. The fields below done are set
@@ -475,10 +498,7 @@ func (w *csearchGrepper) file(name string) (results Results, warning string, err
 		// no output, no error: the index gave a false positive
 		return nil, "", nil
 	}
-	indexedPath := longestRoot(w.roots, name)
-	if indexedPath == "" {
-		return nil, "", fmt.Errorf("no indexed path found for %q", name)
-	}
+	indexedPath := rootOf(w.roots, name)
 	shortName := removePathPrefix(name, indexedPath)
 	// read the file once for all of its matches, not once per match
 	var fileLines []string
