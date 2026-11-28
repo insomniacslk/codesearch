@@ -1,0 +1,19 @@
+// Command genv1 writes the format 1 index used by the csearch tests.
+package main
+
+import (
+	"os"
+	"strings"
+
+	"github.com/google/codesearch/index"
+)
+
+func main() {
+	iw := index.Create(os.Args[1])
+	iw.AddPaths([]string{"/fixture"})
+	// names must be added in sorted order
+	iw.Add("/fixture/cmd/main.go", strings.NewReader("package main\n\nfunc main() { needle() }\n"))
+	iw.Add("/fixture/lib/haystack.go", strings.NewReader("package lib\n\n// nothing to find here\n"))
+	iw.Add("/fixture/lib/needle.go", strings.NewReader("package lib\n\nfunc needle() {}\n"))
+	iw.Flush()
+}
