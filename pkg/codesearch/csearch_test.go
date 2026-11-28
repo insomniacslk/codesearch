@@ -255,33 +255,40 @@ func TestCsearchSearchInFilenamesSkipsDirectories(t *testing.T) {
 	}
 }
 
-// TestCsearchSearchInFilenamesUnreadableDir is the regression test for the
-// walk callback dereferencing info before checking err. filepath.Walk passes a
-// nil info alongside the error for a directory it cannot read.
-func TestCsearchSearchInFilenamesUnreadableDir(t *testing.T) {
-	if os.Geteuid() == 0 {
-		t.Skip("running as root, permissions are not enforced")
-	}
+// TestCsearchSearchInFilenamesUsesTheIndex: -F lists the files the index
+// holds and does not look at the file system. A file that cindex never saw is
+// not reported, and the search works when the tree cannot be read at all.
+func TestCsearchSearchInFilenamesUsesTheIndex(t *testing.T) {
 	indexFile, root := newTestIndex(t, filenameTree)
-
-	locked := filepath.Join(root, "locked")
-	if err := os.MkdirAll(filepath.Join(locked, "inner"), 0o755); err != nil {
-		t.Fatalf("failed to create locked dir: %v", err)
-	}
-	// readable but not traversable: Walk can list the entries but cannot
-	// lstat them, which is the case where it passes a nil info alongside err
-	if err := os.Chmod(locked, 0o400); err != nil {
-		t.Fatalf("failed to chmod: %v", err)
-	}
-	t.Cleanup(func() { _ = os.Chmod(locked, 0o755) })
-
-	results, err := newCsearchBackend(t, indexFile).Search(context.Background(), "main.go", SearchOptions{SearchInFilenames: true})
+	b := newCsearchBackend(t, indexFile)
+	before, err := b.Search(context.Background(), "main.go", SearchOptions{SearchInFilenames: true})
 	if err != nil {
 		t.Fatalf("search failed: %v", err)
 	}
-	// the readable part of the tree is still reported
-	if got, want := resultPaths(results), []string{"cmd/cs/main.go", "main.go"}; !equalLines(got, want) {
-		t.Errorf("got %q, want %q", got, want)
+	want := []string{"cmd/cs/main.go", "main.go"}
+	if got := resultPaths(before); !equalLines(got, want) {
+		t.Fatalf("got %q, want %q", got, want)
+	}
+	for _, r := range before {
+		if !r.IsFilename || r.RepoName != root || r.FileURL != "file://"+filepath.Join(root, r.Path) {
+			t.Errorf("got %+v, want a file name result under %q", r, root)
+		}
+	}
+
+	// added after the index was built
+	if err := os.WriteFile(filepath.Join(root, "new_main.go"), []byte("x\n"), 0o644); err != nil {
+		t.Fatalf("failed to write: %v", err)
+	}
+	// and the whole tree gone
+	if err := os.RemoveAll(filepath.Join(root, "cmd")); err != nil {
+		t.Fatalf("failed to remove: %v", err)
+	}
+	after, err := b.Search(context.Background(), "main.go", SearchOptions{SearchInFilenames: true})
+	if err != nil {
+		t.Fatalf("search failed: %v", err)
+	}
+	if got := resultPaths(after); !equalLines(got, want) {
+		t.Errorf("got %q after the tree changed, want the indexed names %q", got, want)
 	}
 }
 
