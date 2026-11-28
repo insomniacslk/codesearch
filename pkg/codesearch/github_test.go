@@ -743,7 +743,7 @@ func pagedGithubServer(t *testing.T, pages, perPage int, searches, contents *int
 }
 
 // TestGithubLimitStopsPaging is the fix for exhausting the search quota: the
-// code search API allows 30 requests a minute, and paging through every result
+// code search API allows 10 requests a minute, and paging through every result
 // of a search that is about to be truncated spends it for nothing.
 func TestGithubLimitStopsPaging(t *testing.T) {
 	for _, tt := range []struct {
