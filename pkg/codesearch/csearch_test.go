@@ -2,6 +2,7 @@ package codesearch
 
 import (
 	"context"
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"os"
@@ -714,5 +715,57 @@ func TestCsearchParallelGrepKeepsOrder(t *testing.T) {
 		if r.Path != results[i].Path || r.Lineno != results[i].Lineno {
 			t.Errorf("limited result %d is %s:%d, want %s:%d", i, r.Path, r.Lineno, results[i].Path, results[i].Lineno)
 		}
+	}
+}
+
+// TestCsearchCorruptSectionOffsets: an index whose section table points
+// outside of the file, or backwards, used to reach log.Fatal in the library
+// and exit the process. It is now an error. If the check is removed, this
+// test does not fail, it kills the test binary.
+func TestCsearchCorruptSectionOffsets(t *testing.T) {
+	indexFile, _ := newTestIndex(t, map[string]string{"a.go": "needle\n"})
+	good, err := os.ReadFile(indexFile)
+	if err != nil {
+		t.Fatalf("failed to read index: %v", err)
+	}
+	v2 := indexFormats[1]
+	tableStart := len(good) - len(v2.trailer) - v2.fields*v2.fieldSize
+	// field is the position of an 8-byte entry in the section table
+	corrupt := func(field int, value uint64) string {
+		data := append([]byte(nil), good...)
+		binary.BigEndian.PutUint64(data[tableStart+field*8:], value)
+		return string(data)
+	}
+	v1 := indexFormats[0]
+	v1Table := make([]byte, v1.fields*v1.fieldSize)
+	for i := range v1.fields {
+		// every section "starts" far beyond the end of this small file
+		binary.BigEndian.PutUint32(v1Table[i*4:], 1<<30)
+	}
+
+	for name, content := range map[string]string{
+		"path list beyond the end":      corrupt(0, uint64(len(good))+1000),
+		"posting index inside trailer":  corrupt(7, uint64(tableStart)+1),
+		"name list before the header":   corrupt(2, 3),
+		"sections out of order":         corrupt(4, 16),
+		"offset with the top bit set":   corrupt(6, 1<<63),
+		"format 1 with wild offsets":    v1.magic + strings.Repeat("\x00", 64) + string(v1Table) + v1.trailer,
+		"format 1 with a table of zero": v1.magic + strings.Repeat("\x00", 64) + strings.Repeat("\x00", 20) + v1.trailer,
+	} {
+		t.Run(name, func(t *testing.T) {
+			path := csearchWriteIndexFile(content)(t)
+			_, err := newCsearchBackend(t, path).Search(context.Background(), "needle", SearchOptions{})
+			if err == nil {
+				t.Fatal("got nil error, want a failure")
+			}
+			if !strings.Contains(err.Error(), "corrupt") || !strings.Contains(err.Error(), "cindex") {
+				t.Errorf("got error %q, want it to say the index is corrupt and name cindex", err)
+			}
+		})
+	}
+
+	// the untouched index still opens
+	if _, err := newCsearchBackend(t, csearchWriteIndexFile(string(good))(t)).Search(context.Background(), "needle", SearchOptions{}); err != nil {
+		t.Errorf("the valid index failed: %v", err)
 	}
 }
