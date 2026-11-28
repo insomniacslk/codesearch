@@ -19,6 +19,7 @@ type Github struct {
 	apiEndpoint string
 	token       string
 	org         string
+	cache       *githubCache
 }
 
 func NewGithub(name string, params BackendParams) (*Github, error) {
@@ -34,7 +35,12 @@ func NewGithub(name string, params BackendParams) (*Github, error) {
 	if apiEndpoint == nil {
 		return nil, fmt.Errorf("missing 'api_endpoint' parameter")
 	}
+	cache, err := newGithubCache(params)
+	if err != nil {
+		return nil, err
+	}
 	return &Github{
+		cache:       cache,
 		name:        name,
 		org:         *org,
 		token:       token,
@@ -218,6 +224,9 @@ const githubDownloadConcurrency = 8
 // githubFileRef identifies a file to download.
 type githubFileRef struct {
 	owner, repo, path string
+	// sha is the git blob SHA of the version of the file that the search
+	// index holds
+	sha string
 }
 
 func (r githubFileRef) String() string {
@@ -312,6 +321,7 @@ func githubRef(res *github.CodeResult) githubFileRef {
 		owner: res.GetRepository().GetOwner().GetLogin(),
 		repo:  res.GetRepository().GetName(),
 		path:  res.GetPath(),
+		sha:   res.GetSHA(),
 	}
 }
 
@@ -404,7 +414,17 @@ func (g *Github) toResult(ctx context.Context, client *github.Client, csresults 
 		}
 	}
 	downloader := newGithubDownloader(ctx, queue, func(ctx context.Context, ref githubFileRef) (string, error) {
-		return g.fetchFile(ctx, client, ref)
+		if text, ok := g.cache.load(ref.sha); ok {
+			logrus.Debugf("Using cached content for %q", ref)
+			return text, nil
+		}
+		text, err := g.fetchFile(ctx, client, ref)
+		if err == nil {
+			// stored under the SHA of what was downloaded, which is not
+			// ref.sha when the file changed after GitHub indexed it
+			g.cache.store(text)
+		}
+		return text, err
 	})
 	defer downloader.stop()
 	for _, res := range csresults {

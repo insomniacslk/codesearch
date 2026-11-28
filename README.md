@@ -97,6 +97,26 @@ uses its output, which lets the secret live in a password manager:
       token_command: pass show github/codesearch
 ```
 
+## GitHub file cache
+
+The GitHub backend downloads every file that has a match, to show line numbers
+and context. It keeps these files in `cs/github` in your user cache directory
+(`~/.cache` on Linux), named after their git blob SHA, so a repeated search does
+not download them again. An entry never goes out of date, because its name is a
+checksum of its content.
+
+The cache holds source code from every repository you search, private ones
+included, and `cs` never deletes entries; remove the directory to reclaim the
+space. To move the cache or turn it off, set `cache_dir` in the backend
+parameters:
+
+```yaml
+    params:
+      cache_dir: /some/other/place
+      # ...or, to turn the cache off:
+      cache_dir: ""
+```
+
 ## Backends
 
 Currently GitHub, GitLab and local search via
