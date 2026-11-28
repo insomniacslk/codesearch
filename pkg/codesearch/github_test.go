@@ -17,6 +17,7 @@ import (
 
 	"github.com/google/go-github/v76/github"
 	"github.com/sirupsen/logrus"
+	logrustest "github.com/sirupsen/logrus/hooks/test"
 )
 
 func rateLimitError(reset time.Time) error {
@@ -241,6 +242,11 @@ func searchPage(w http.ResponseWriter, r *http.Request, items string, nextPage i
 func TestGithubSearchPaginates(t *testing.T) {
 	var searches int32
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.Contains(r.URL.Path, "/users/") {
+			// the check for an empty result, see warnIfUnknownOrg
+			_, _ = fmt.Fprint(w, `{"login":"testorg"}`)
+			return
+		}
 		if !strings.Contains(r.URL.Path, "/search/code") {
 			t.Errorf("unexpected request to %s", r.URL.Path)
 			http.NotFound(w, r)
@@ -1045,7 +1051,9 @@ func TestGithubInvalidIndices(t *testing.T) {
 func TestGithubSearchRequestsLargestPage(t *testing.T) {
 	var perPage atomic.Value
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		perPage.Store(r.URL.Query().Get("per_page"))
+		if strings.Contains(r.URL.Path, "/search/code") {
+			perPage.Store(r.URL.Query().Get("per_page"))
+		}
 		searchPage(w, r, "", 0)
 	}))
 	defer srv.Close()
@@ -1218,5 +1226,76 @@ func TestGithubHighlightAfterNonASCII(t *testing.T) {
 	}
 	if got := r.Line[r.Highlight[0]:r.Highlight[1]]; got != "già" {
 		t.Errorf("got highlight %q, want %q", got, "già")
+	}
+}
+
+// orgCheckServer serves a search with these items and a users endpoint that
+// answers with userStatus, counting the requests to it.
+func orgCheckServer(t *testing.T, items string, userStatus int, userRequests *int32) *httptest.Server {
+	t.Helper()
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.Contains(r.URL.Path, "/search/code"):
+			searchPage(w, r, items, 0)
+		case strings.HasSuffix(r.URL.Path, "/users/testorg"):
+			atomic.AddInt32(userRequests, 1)
+			if userStatus != http.StatusOK {
+				http.Error(w, `{"message":"Not Found"}`, userStatus)
+				return
+			}
+			_, _ = fmt.Fprint(w, `{"login":"testorg"}`)
+		case strings.Contains(r.URL.Path, "/contents/"):
+			_, _ = fmt.Fprint(w, base64File("needle\n"))
+		default:
+			t.Errorf("unexpected request to %s", r.URL.Path)
+			http.NotFound(w, r)
+		}
+	}))
+}
+
+// TestGithubWarnsAboutUnknownOrg: GitHub answers a search in an organization
+// that does not exist like a search without matches, so an empty result is
+// checked against the organization, and only an empty result.
+func TestGithubWarnsAboutUnknownOrg(t *testing.T) {
+	for _, tt := range []struct {
+		name         string
+		items        string
+		userStatus   int
+		wantRequests int32
+		wantWarning  bool
+	}{
+		{"no results and no such org", "", http.StatusNotFound, 1, true},
+		{"no results in a real org", "", http.StatusOK, 1, false},
+		{"no results and the check fails", "", http.StatusInternalServerError, 1, false},
+		{"results", codeResultJSON("f.go", "needle", 0, 6), http.StatusNotFound, 0, false},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			var userRequests int32
+			srv := orgCheckServer(t, tt.items, tt.userStatus, &userRequests)
+			defer srv.Close()
+			hook := logrustest.NewGlobal()
+			defer hook.Reset()
+			defer logrus.StandardLogger().ReplaceHooks(make(logrus.LevelHooks))
+
+			results, err := newGithubBackend(t, srv.URL).Search(context.Background(), "needle", SearchOptions{})
+			if err != nil {
+				t.Fatalf("search failed: %v", err)
+			}
+			if wantResults := tt.items != ""; (len(results) > 0) != wantResults {
+				t.Errorf("got %d results, want results: %v", len(results), wantResults)
+			}
+			if got := atomic.LoadInt32(&userRequests); got != tt.wantRequests {
+				t.Errorf("got %d requests for the organization, want %d", got, tt.wantRequests)
+			}
+			var warned bool
+			for _, e := range hook.AllEntries() {
+				if e.Level == logrus.WarnLevel && strings.Contains(e.Message, `"testorg"`) && strings.Contains(e.Message, "'org'") {
+					warned = true
+				}
+			}
+			if warned != tt.wantWarning {
+				t.Errorf("got warning %v, want %v", warned, tt.wantWarning)
+			}
+		})
 	}
 }

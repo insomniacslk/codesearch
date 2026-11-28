@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/http"
 	"net/url"
 	"strings"
 	"sync"
@@ -124,7 +125,32 @@ func (g *Github) Search(ctx context.Context, terms string, opts SearchOptions) (
 		}
 		sopts.Page = response.NextPage
 	}
+	if len(csresults) == 0 {
+		g.warnIfUnknownOrg(ctx, client)
+	}
 	return g.toResult(ctx, client, csresults, opts)
+}
+
+// warnIfUnknownOrg explains an empty result when the configured org is the
+// reason for it. GitHub answers a search in an organization or user that does
+// not exist, or that the token cannot see, the same way as a search without
+// matches: with success and no hits. A typing error in the configuration
+// would otherwise look like "no matches" for ever.
+func (g *Github) warnIfUnknownOrg(ctx context.Context, client *github.Client) {
+	if g.org == "" {
+		return
+	}
+	// organizations are users as far as this endpoint is concerned
+	_, resp, err := client.Users.Get(ctx, g.org)
+	if err == nil {
+		return
+	}
+	if resp != nil && resp.StatusCode == http.StatusNotFound {
+		logrus.Warnf("No results, and GitHub knows no organization or user called %q: check the 'org' parameter of backend %q", g.org, g.name)
+		return
+	}
+	// the check is a courtesy; failing to make it is not worth reporting
+	logrus.Debugf("Could not check whether %q exists: %v", g.org, err)
 }
 
 // githubSearchPageSize is the largest page size the search API accepts.
