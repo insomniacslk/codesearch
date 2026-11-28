@@ -24,6 +24,18 @@ import (
 // on them. Reading an index has no such state.
 var indexWriteMu sync.Mutex
 
+// writeTestIndex creates the index file and lets fill add the roots and the
+// files to it. Every test that writes an index must go through it, because it
+// holds indexWriteMu for the whole write.
+func writeTestIndex(t *testing.T, indexFile string, fill func(iw *index.IndexWriter)) {
+	t.Helper()
+	indexWriteMu.Lock()
+	defer indexWriteMu.Unlock()
+	iw := index.Create(indexFile)
+	fill(iw)
+	iw.Flush()
+}
+
 // TestContextLinesNeverPanics covers the regression where the after-context
 // slice was taken one past the clamped upper bound, so any match near the end
 // of a file with -A set panicked with "slice bounds out of range".
@@ -191,22 +203,20 @@ func newTestIndex(t *testing.T, files map[string]string) (indexFile, root string
 		}
 	}
 	indexFile = filepath.Join(t.TempDir(), "csearchindex")
-	indexWriteMu.Lock()
-	defer indexWriteMu.Unlock()
-	iw := index.Create(indexFile)
-	iw.AddRoots([]index.Path{index.MakePath(root)})
-	err := filepath.Walk(root, func(p string, info os.FileInfo, err error) error {
-		if err == nil && !info.IsDir() {
-			if err := iw.AddFile(p); err != nil {
-				t.Errorf("failed to index %q: %v", p, err)
+	writeTestIndex(t, indexFile, func(iw *index.IndexWriter) {
+		iw.AddRoots([]index.Path{index.MakePath(root)})
+		err := filepath.Walk(root, func(p string, info os.FileInfo, err error) error {
+			if err == nil && !info.IsDir() {
+				if err := iw.AddFile(p); err != nil {
+					t.Errorf("failed to index %q: %v", p, err)
+				}
 			}
+			return nil
+		})
+		if err != nil {
+			t.Errorf("failed to index tree: %v", err)
 		}
-		return nil
 	})
-	if err != nil {
-		t.Fatalf("failed to index tree: %v", err)
-	}
-	iw.Flush()
 	return indexFile, root
 }
 
@@ -657,16 +667,12 @@ func TestCsearchRootIndex(t *testing.T) {
 	// index a single file under a root of "/" rather than walk the whole
 	// file system
 	indexFile := filepath.Join(t.TempDir(), "csearchindex")
-	func() {
-		indexWriteMu.Lock()
-		defer indexWriteMu.Unlock()
-		iw := index.Create(indexFile)
+	writeTestIndex(t, indexFile, func(iw *index.IndexWriter) {
 		iw.AddRoots([]index.Path{index.MakePath("/")})
 		if err := iw.AddFile(file); err != nil {
-			t.Fatalf("failed to index %q: %v", file, err)
+			t.Errorf("failed to index %q: %v", file, err)
 		}
-		iw.Flush()
-	}()
+	})
 
 	results, err := newCsearchBackend(t, indexFile).Search(context.Background(), "needle", SearchOptions{})
 	if err != nil {
