@@ -238,6 +238,7 @@ func indexRoots(ix *index.Index) []string {
 }
 
 func (g *Csearch) Search(ctx context.Context, searchString string, opts SearchOptions) (Results, error) {
+	log := opts.logger()
 	ctx, cancel := searchContext(ctx, opts.Timeout)
 	defer cancel()
 
@@ -250,7 +251,7 @@ func (g *Csearch) Search(ctx context.Context, searchString string, opts SearchOp
 		return nil, err
 	}
 	if opts.SearchInFilenames {
-		logrus.Debugf("Searching in file names")
+		log.Debugf("Searching in file names")
 		re, err := goregexp.Compile(pattern)
 		if err != nil {
 			return nil, fmt.Errorf("failed to compile pattern for indexing: %w", err)
@@ -263,7 +264,7 @@ func (g *Csearch) Search(ctx context.Context, searchString string, opts SearchOp
 	}
 	q := index.RegexpQuery(re.Syntax)
 	post := ix.PostingQuery(q)
-	return g.toResult(ctx, pattern, ix, post, opts)
+	return g.toResult(ctx, log, pattern, ix, post, opts)
 }
 
 // searchFilenames matches re against the name of every file in the index.
@@ -365,7 +366,7 @@ func newCsearchGrepper(backend, pattern string, locate *goregexp.Regexp, roots [
 	return w, nil
 }
 
-func (g *Csearch) toResult(ctx context.Context, pattern string, ix *index.Index, post []int, opts SearchOptions) (Results, error) {
+func (g *Csearch) toResult(ctx context.Context, log logrus.FieldLogger, pattern string, ix *index.Index, post []int, opts SearchOptions) (Results, error) {
 	locate, err := goregexp.Compile(pattern)
 	if err != nil {
 		return nil, fmt.Errorf("failed to compile pattern for indexing: %w", err)
@@ -398,7 +399,7 @@ func (g *Csearch) toResult(ctx context.Context, pattern string, ix *index.Index,
 		defer close(ordered)
 		for _, fileid := range post {
 			job := &csearchJob{name: ix.Name(fileid).String(), done: make(chan struct{})}
-			logrus.Debugf("fileid=%d name=%q", fileid, job.name)
+			log.Debugf("fileid=%d name=%q", fileid, job.name)
 			select {
 			case ordered <- job:
 			case <-ctx.Done():
@@ -443,7 +444,7 @@ func (g *Csearch) toResult(ctx context.Context, pattern string, ix *index.Index,
 			return nil, job.err
 		}
 		if job.warning != "" {
-			logrus.Warn(job.warning)
+			log.Warn(job.warning)
 		}
 		results = append(results, job.results...)
 		for _, r := range job.results {

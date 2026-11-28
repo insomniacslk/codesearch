@@ -15,6 +15,7 @@ import (
 
 // TestGitBlobSHA checks the hash against values from `git hash-object`.
 func TestGitBlobSHA(t *testing.T) {
+	t.Parallel()
 	for content, want := range map[string]string{
 		"":              "e69de29bb2d1d6434b8b29ae775ad8c2e48c5391",
 		"hello world\n": "3b18e512dba79e4c8300dd08aeb37f8e728b8dad",
@@ -73,6 +74,7 @@ func githubSearchOne(t *testing.T, b *Github) Result {
 // new backend as a new cs process would have, downloads nothing and gives the
 // same result.
 func TestGithubCacheAvoidsDownload(t *testing.T) {
+	t.Parallel()
 	const content = "first\nneedle here\n"
 	var downloads int32
 	srv := cachedGithubServer(t, content, gitBlobSHA(content), &downloads)
@@ -96,6 +98,7 @@ func TestGithubCacheAvoidsDownload(t *testing.T) {
 // the download is not the blob the hit names, so it must not be served for
 // that SHA.
 func TestGithubCacheStaleIndex(t *testing.T) {
+	t.Parallel()
 	const content = "needle\n"
 	var downloads int32
 	srv := cachedGithubServer(t, content, gitBlobSHA("an older version\n"), &downloads)
@@ -112,6 +115,7 @@ func TestGithubCacheStaleIndex(t *testing.T) {
 // TestGithubCacheDropsCorruptEntry: an entry whose content does not hash to
 // its name is not used, and is replaced by a fresh download.
 func TestGithubCacheDropsCorruptEntry(t *testing.T) {
+	t.Parallel()
 	const content = "needle\n"
 	sha := gitBlobSHA(content)
 	var downloads int32
@@ -156,8 +160,9 @@ func TestGithubCacheDisabled(t *testing.T) {
 
 // TestGithubCacheEntryPermissions: cached source code may be private.
 func TestGithubCacheEntryPermissions(t *testing.T) {
+	t.Parallel()
 	c := &githubCache{dir: filepath.Join(t.TempDir(), "cache")}
-	c.store("secret\n")
+	c.store(discardLogger(), "secret\n")
 	sha := gitBlobSHA("secret\n")
 	for _, p := range []string{c.dir, filepath.Join(c.dir, sha[:2]), filepath.Join(c.dir, sha[:2], sha[2:])} {
 		info, err := os.Stat(p)
@@ -185,6 +190,7 @@ func TestGithubCacheEntryPermissions(t *testing.T) {
 // writes to the cache removes it, but not a file young enough to belong to a
 // cs that is still running.
 func TestGithubCacheSweepsLeftovers(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	tmpDir := filepath.Join(dir, "tmp")
 	if err := os.MkdirAll(tmpDir, 0o700); err != nil {
@@ -202,14 +208,14 @@ func TestGithubCacheSweepsLeftovers(t *testing.T) {
 	}
 
 	c := &githubCache{dir: dir}
-	c.store("content\n")
+	c.store(discardLogger(), "content\n")
 	if _, err := os.Stat(old); !os.IsNotExist(err) {
 		t.Errorf("the old leftover is still there (%v), want it removed", err)
 	}
 	if _, err := os.Stat(young); err != nil {
 		t.Errorf("the young temporary file is gone (%v), want it kept", err)
 	}
-	if _, ok := c.load(gitBlobSHA("content\n")); !ok {
+	if _, ok := c.load(discardLogger(), gitBlobSHA("content\n")); !ok {
 		t.Error("the stored entry cannot be loaded")
 	}
 }
@@ -217,6 +223,7 @@ func TestGithubCacheSweepsLeftovers(t *testing.T) {
 // TestGithubCacheRejectsBadSHA: the SHA comes from the API and is used in a
 // file name.
 func TestGithubCacheRejectsBadSHA(t *testing.T) {
+	t.Parallel()
 	c := &githubCache{dir: t.TempDir()}
 	for _, sha := range []string{"", "deadbeef", "../../../../etc/passwd", strings.Repeat("A", 40), strings.Repeat("a", 39) + "/", strings.Repeat("a", 64)} {
 		if p, ok := c.path(sha); ok {
@@ -224,10 +231,10 @@ func TestGithubCacheRejectsBadSHA(t *testing.T) {
 		}
 	}
 	var none *githubCache
-	if _, ok := none.load(strings.Repeat("a", 40)); ok {
+	if _, ok := none.load(discardLogger(), strings.Repeat("a", 40)); ok {
 		t.Error("a nil cache returned an entry")
 	}
-	none.store("ignored")
+	none.store(discardLogger(), "ignored")
 }
 
 // TestGithubCacheDirParam covers the parameter itself.

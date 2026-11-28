@@ -47,7 +47,9 @@ func newGithubCache(params BackendParams) (*githubCache, error) {
 	}
 	base, err := os.UserCacheDir()
 	if err != nil {
-		// no home directory, e.g. in a minimal container; searching still works
+		// no home directory, e.g. in a minimal container; searching still works.
+		// This runs when the backend is built, before any search supplies a
+		// logger in SearchOptions, so it goes to the standard logger.
 		logrus.Debugf("File cache disabled: %v", err)
 		return nil, nil
 	}
@@ -79,7 +81,7 @@ func (c *githubCache) path(sha string) (string, bool) {
 }
 
 // load returns the content of the blob with this SHA, if it is in the cache.
-func (c *githubCache) load(sha string) (string, bool) {
+func (c *githubCache) load(log logrus.FieldLogger, sha string) (string, bool) {
 	path, ok := c.path(sha)
 	if !ok {
 		return "", false
@@ -91,7 +93,7 @@ func (c *githubCache) load(sha string) (string, bool) {
 	text := string(data)
 	if gitBlobSHA(text) != sha {
 		// truncated by a crash, or edited; either way it is not this blob
-		logrus.Debugf("Dropping corrupt cache entry %q", path)
+		log.Debugf("Dropping corrupt cache entry %q", path)
 		_ = os.Remove(path)
 		return "", false
 	}
@@ -100,13 +102,13 @@ func (c *githubCache) load(sha string) (string, bool) {
 
 // store saves a downloaded file under the SHA of its content. Failing to do
 // so only costs a download next time, so it is not an error.
-func (c *githubCache) store(text string) {
+func (c *githubCache) store(log logrus.FieldLogger, text string) {
 	path, ok := c.path(gitBlobSHA(text))
 	if !ok {
 		return
 	}
 	if err := c.write(path, text); err != nil {
-		logrus.Debugf("Cannot cache file: %v", err)
+		log.Debugf("Cannot cache file: %v", err)
 	}
 }
 

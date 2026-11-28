@@ -6,6 +6,7 @@ import (
 )
 
 func TestResolveTokenLiteral(t *testing.T) {
+	t.Parallel()
 	p := BackendParams{"token": "ghp_literaltoken"}
 	got, err := p.ResolveToken()
 	if err != nil {
@@ -58,6 +59,7 @@ func TestResolveTokenLeavesLiteralsAlone(t *testing.T) {
 }
 
 func TestResolveTokenMissingEnvironmentVariable(t *testing.T) {
+	t.Parallel()
 	p := BackendParams{"token": "${CS_TEST_DEFINITELY_UNSET}"}
 	_, err := p.ResolveToken()
 	if err == nil {
@@ -77,6 +79,7 @@ func TestResolveTokenEmptyEnvironmentVariable(t *testing.T) {
 }
 
 func TestResolveTokenFromCommand(t *testing.T) {
+	t.Parallel()
 	p := BackendParams{"token_command": "printf 'secret-from-helper\\n'"}
 	got, err := p.ResolveToken()
 	if err != nil {
@@ -90,6 +93,7 @@ func TestResolveTokenFromCommand(t *testing.T) {
 // TestResolveTokenCommandTrimsOnlyTrailingNewlines checks that a secret with
 // meaningful leading or internal whitespace survives.
 func TestResolveTokenCommandTrimsOnlyTrailingNewlines(t *testing.T) {
+	t.Parallel()
 	for _, tt := range []struct {
 		cmdline, want string
 	}{
@@ -113,6 +117,7 @@ func TestResolveTokenCommandTrimsOnlyTrailingNewlines(t *testing.T) {
 }
 
 func TestResolveTokenCommandTakesPrecedence(t *testing.T) {
+	t.Parallel()
 	p := BackendParams{
 		"token":         "ignored-literal",
 		"token_command": "printf 'from-helper'",
@@ -127,6 +132,7 @@ func TestResolveTokenCommandTakesPrecedence(t *testing.T) {
 }
 
 func TestResolveTokenCommandFailure(t *testing.T) {
+	t.Parallel()
 	p := BackendParams{"token_command": "echo 'no such secret' >&2; exit 1"}
 	_, err := p.ResolveToken()
 	if err == nil {
@@ -139,6 +145,7 @@ func TestResolveTokenCommandFailure(t *testing.T) {
 }
 
 func TestResolveTokenCommandEmptyOutput(t *testing.T) {
+	t.Parallel()
 	p := BackendParams{"token_command": "true"}
 	if _, err := p.ResolveToken(); err == nil {
 		t.Fatal("got nil error, want a failure for a helper that printed nothing")
@@ -146,6 +153,7 @@ func TestResolveTokenCommandEmptyOutput(t *testing.T) {
 }
 
 func TestResolveTokenMissingEntirely(t *testing.T) {
+	t.Parallel()
 	p := BackendParams{"org": "someorg"}
 	_, err := p.ResolveToken()
 	if err == nil {
@@ -204,6 +212,7 @@ func TestBackendsResolveTokens(t *testing.T) {
 // TestValidateRejectsUnimplementedType covers bitbucket passing validation and
 // failing only once a search tried to instantiate it.
 func TestValidateRejectsUnimplementedType(t *testing.T) {
+	t.Parallel()
 	c := Config{Backends: map[string]BackendConfig{"bb": {Type: BackendTypeBitbucket}}}
 	err := c.Validate()
 	if err == nil {
@@ -215,6 +224,7 @@ func TestValidateRejectsUnimplementedType(t *testing.T) {
 }
 
 func TestValidateRejectsUnknownType(t *testing.T) {
+	t.Parallel()
 	c := Config{Backends: map[string]BackendConfig{"x": {Type: "svn"}}}
 	err := c.Validate()
 	if err == nil {
@@ -226,6 +236,7 @@ func TestValidateRejectsUnknownType(t *testing.T) {
 }
 
 func TestValidateAcceptsImplementedTypes(t *testing.T) {
+	t.Parallel()
 	for typ := range backendConstructors {
 		c := Config{Backends: map[string]BackendConfig{"x": {Type: typ}}}
 		if err := c.Validate(); err != nil {
@@ -237,6 +248,7 @@ func TestValidateAcceptsImplementedTypes(t *testing.T) {
 // TestValidateBackendNamesIgnoreCase covers a default backend written with
 // different case from the key under backends, which viper lowercases.
 func TestValidateBackendNamesIgnoreCase(t *testing.T) {
+	t.Parallel()
 	c := Config{
 		DefaultBackends: []string{"GitHub_Me"},
 		Backends:        map[string]BackendConfig{"github_me": {Type: BackendTypeCsearch}},

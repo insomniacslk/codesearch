@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -17,10 +18,29 @@ import (
 	logrustest "github.com/sirupsen/logrus/hooks/test"
 )
 
+// indexWriteMu serialises the tests that write an index. The index writer of
+// github.com/google/codesearch sorts posting lists in package-level buffers,
+// so two tests that run in parallel and write an index at the same time race
+// on them. Reading an index has no such state.
+var indexWriteMu sync.Mutex
+
+// writeTestIndex creates the index file and lets fill add the roots and the
+// files to it. Every test that writes an index must go through it, because it
+// holds indexWriteMu for the whole write.
+func writeTestIndex(t *testing.T, indexFile string, fill func(iw *index.IndexWriter)) {
+	t.Helper()
+	indexWriteMu.Lock()
+	defer indexWriteMu.Unlock()
+	iw := index.Create(indexFile)
+	fill(iw)
+	iw.Flush()
+}
+
 // TestContextLinesNeverPanics covers the regression where the after-context
 // slice was taken one past the clamped upper bound, so any match near the end
 // of a file with -A set panicked with "slice bounds out of range".
 func TestContextLinesNeverPanics(t *testing.T) {
+	t.Parallel()
 	files := [][]string{
 		{},
 		{""},
@@ -53,6 +73,7 @@ func TestContextLinesNeverPanics(t *testing.T) {
 // TestContextLinesLastLineWithAfter is the exact case reported: a match on the
 // final line of the file with one line of trailing context requested.
 func TestContextLinesLastLineWithAfter(t *testing.T) {
+	t.Parallel()
 	lines := strings.Split("aaa\nbbb\nccc", "\n")
 	before, after := contextLines(lines, 3, 0, 1)
 	if len(before) != 0 {
@@ -68,6 +89,7 @@ func TestContextLinesLastLineWithAfter(t *testing.T) {
 // the earliest requested line) and the after-context started one line too
 // late, skipping the line immediately following the match.
 func TestContextLinesSelectsTheRightLines(t *testing.T) {
+	t.Parallel()
 	lines := []string{"one", "two", "three", "four", "five"}
 	for _, tt := range []struct {
 		name                  string
@@ -120,6 +142,7 @@ func TestContextLinesSelectsTheRightLines(t *testing.T) {
 // TestContextLinesExcludesTheMatchLine is the core invariant: the matching
 // line is printed separately, so it must never appear in either context.
 func TestContextLinesExcludesTheMatchLine(t *testing.T) {
+	t.Parallel()
 	lines := []string{"a", "b", "c", "d", "e"}
 	for lineno := 1; lineno <= len(lines); lineno++ {
 		before, after := contextLines(lines, lineno, 10, 10)
@@ -148,6 +171,7 @@ func equalLines(a, b []string) bool {
 }
 
 func TestClamp(t *testing.T) {
+	t.Parallel()
 	for _, tt := range []struct {
 		v, lo, hi, want int
 	}{
@@ -179,20 +203,20 @@ func newTestIndex(t *testing.T, files map[string]string) (indexFile, root string
 		}
 	}
 	indexFile = filepath.Join(t.TempDir(), "csearchindex")
-	iw := index.Create(indexFile)
-	iw.AddRoots([]index.Path{index.MakePath(root)})
-	err := filepath.Walk(root, func(p string, info os.FileInfo, err error) error {
-		if err == nil && !info.IsDir() {
-			if err := iw.AddFile(p); err != nil {
-				t.Errorf("failed to index %q: %v", p, err)
+	writeTestIndex(t, indexFile, func(iw *index.IndexWriter) {
+		iw.AddRoots([]index.Path{index.MakePath(root)})
+		err := filepath.Walk(root, func(p string, info os.FileInfo, err error) error {
+			if err == nil && !info.IsDir() {
+				if err := iw.AddFile(p); err != nil {
+					t.Errorf("failed to index %q: %v", p, err)
+				}
 			}
+			return nil
+		})
+		if err != nil {
+			t.Errorf("failed to index tree: %v", err)
 		}
-		return nil
 	})
-	if err != nil {
-		t.Fatalf("failed to index tree: %v", err)
-	}
-	iw.Flush()
 	return indexFile, root
 }
 
@@ -222,6 +246,7 @@ var filenameTree = map[string]string{
 }
 
 func TestCsearchSearchInFilenames(t *testing.T) {
+	t.Parallel()
 	indexFile, _ := newTestIndex(t, filenameTree)
 	for _, tt := range []struct {
 		name, pattern string
@@ -248,6 +273,7 @@ func TestCsearchSearchInFilenames(t *testing.T) {
 // TestCsearchSearchInFilenamesSkipsDirectories checks that a pattern matching
 // a directory name does not report the directory itself as a hit.
 func TestCsearchSearchInFilenamesSkipsDirectories(t *testing.T) {
+	t.Parallel()
 	indexFile, _ := newTestIndex(t, filenameTree)
 	results, err := newCsearchBackend(t, indexFile).Search(context.Background(), "thing", SearchOptions{SearchInFilenames: true})
 	if err != nil {
@@ -262,6 +288,7 @@ func TestCsearchSearchInFilenamesSkipsDirectories(t *testing.T) {
 // holds and does not look at the file system. A file that cindex never saw is
 // not reported, and the search works when the tree cannot be read at all.
 func TestCsearchSearchInFilenamesUsesTheIndex(t *testing.T) {
+	t.Parallel()
 	indexFile, root := newTestIndex(t, filenameTree)
 	b := newCsearchBackend(t, indexFile)
 	before, err := b.Search(context.Background(), "main.go", SearchOptions{SearchInFilenames: true})
@@ -296,6 +323,7 @@ func TestCsearchSearchInFilenamesUsesTheIndex(t *testing.T) {
 }
 
 func TestRemovePathPrefix(t *testing.T) {
+	t.Parallel()
 	for _, tt := range []struct {
 		s, prefix, want string
 	}{
@@ -316,6 +344,7 @@ func TestRemovePathPrefix(t *testing.T) {
 // TestHasPathPrefix covers the component-boundary comparison: a plain
 // strings.HasPrefix makes "/src/repo" look like a parent of "/src/repo2".
 func TestHasPathPrefix(t *testing.T) {
+	t.Parallel()
 	for _, tt := range []struct {
 		s, prefix string
 		want      bool
@@ -342,6 +371,7 @@ func TestHasPathPrefix(t *testing.T) {
 // shows up in the reported path: a sibling directory sharing a prefix used to
 // have its name mangled instead of being left alone.
 func TestRemovePathPrefixRespectsComponents(t *testing.T) {
+	t.Parallel()
 	for _, tt := range []struct {
 		s, prefix, want string
 	}{
@@ -358,6 +388,7 @@ func TestRemovePathPrefixRespectsComponents(t *testing.T) {
 // TestCsearchHonoursCancellation checks that a local search stops when the
 // caller cancels, rather than grinding through every file in the index.
 func TestCsearchHonoursCancellation(t *testing.T) {
+	t.Parallel()
 	files := make(map[string]string, 200)
 	for i := 0; i < 200; i++ {
 		files[fmt.Sprintf("f%03d.go", i)] = "package main\n// needle\n"
@@ -374,6 +405,7 @@ func TestCsearchHonoursCancellation(t *testing.T) {
 }
 
 func TestCsearchHonoursTimeout(t *testing.T) {
+	t.Parallel()
 	indexFile, _ := newTestIndex(t, map[string]string{"a.go": "needle\n"})
 	ctx, cancel := context.WithTimeout(context.Background(), time.Nanosecond)
 	defer cancel()
@@ -386,6 +418,7 @@ func TestCsearchHonoursTimeout(t *testing.T) {
 }
 
 func TestExpandHome(t *testing.T) {
+	t.Parallel()
 	home, err := os.UserHomeDir()
 	if err != nil {
 		t.Skipf("no home directory: %v", err)
@@ -424,6 +457,7 @@ func TestExpandHome(t *testing.T) {
 // TestCsearchExpandsIndexPath checks that the expansion is actually applied to
 // the configured index file.
 func TestCsearchExpandsIndexPath(t *testing.T) {
+	t.Parallel()
 	home, err := os.UserHomeDir()
 	if err != nil {
 		t.Skipf("no home directory: %v", err)
@@ -441,6 +475,7 @@ func TestCsearchExpandsIndexPath(t *testing.T) {
 // missing or malformed index used to abort the process with "corrupt index:
 // remove ..." instead of returning an error the caller could report.
 func TestCsearchMissingIndex(t *testing.T) {
+	t.Parallel()
 	for _, tt := range []struct {
 		name    string
 		setup   func(t *testing.T) string
@@ -538,6 +573,7 @@ func TestCsearchMissingIndex(t *testing.T) {
 // TestCsearchValidIndexStillOpens makes sure the check does not reject a real
 // index built by the index package.
 func TestCsearchValidIndexStillOpens(t *testing.T) {
+	t.Parallel()
 	indexFile, _ := newTestIndex(t, map[string]string{"a.go": "needle here\n"})
 	results, err := newCsearchBackend(t, indexFile).Search(context.Background(), "needle", SearchOptions{})
 	if err != nil {
@@ -562,6 +598,7 @@ func csearchWriteIndexFile(content string) func(t *testing.T) string {
 // is a snapshot, so this is the normal state, and it used to fail the whole
 // search with "match reader failed" instead of returning the other hits.
 func TestCsearchSkipsStaleFiles(t *testing.T) {
+	t.Parallel()
 	indexFile, root := newTestIndex(t, map[string]string{
 		"a.go": "needle\n",
 		"b.go": "needle\n",
@@ -584,6 +621,7 @@ func TestCsearchSkipsStaleFiles(t *testing.T) {
 // TestCsearchSearchInFilenamesHonoursCancellation covers the -F walk, which
 // never looked at the context, so neither --timeout nor Ctrl-C stopped it.
 func TestCsearchSearchInFilenamesHonoursCancellation(t *testing.T) {
+	t.Parallel()
 	indexFile, _ := newTestIndex(t, filenameTree)
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
@@ -597,6 +635,7 @@ func TestCsearchSearchInFilenamesHonoursCancellation(t *testing.T) {
 // TestCsearchSearchInFilenamesIsOrdered covers -F results coming out of a map
 // in random order, which made --limit pick a different subset on every run.
 func TestCsearchSearchInFilenamesIsOrdered(t *testing.T) {
+	t.Parallel()
 	files := make(map[string]string, 50)
 	for i := 0; i < 50; i++ {
 		files[fmt.Sprintf("f%02d.go", i)] = "package main\n"
@@ -619,6 +658,7 @@ func TestCsearchSearchInFilenamesIsOrdered(t *testing.T) {
 // TestCsearchRootIndex covers an index whose root is "/": the root used to
 // match no path at all, so every search failed with "no indexed path found".
 func TestCsearchRootIndex(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	file := filepath.Join(dir, "a.go")
 	if err := os.WriteFile(file, []byte("needle\n"), 0o644); err != nil {
@@ -627,12 +667,12 @@ func TestCsearchRootIndex(t *testing.T) {
 	// index a single file under a root of "/" rather than walk the whole
 	// file system
 	indexFile := filepath.Join(t.TempDir(), "csearchindex")
-	iw := index.Create(indexFile)
-	iw.AddRoots([]index.Path{index.MakePath("/")})
-	if err := iw.AddFile(file); err != nil {
-		t.Fatalf("failed to index %q: %v", file, err)
-	}
-	iw.Flush()
+	writeTestIndex(t, indexFile, func(iw *index.IndexWriter) {
+		iw.AddRoots([]index.Path{index.MakePath("/")})
+		if err := iw.AddFile(file); err != nil {
+			t.Errorf("failed to index %q: %v", file, err)
+		}
+	})
 
 	results, err := newCsearchBackend(t, indexFile).Search(context.Background(), "needle", SearchOptions{})
 	if err != nil {
@@ -650,6 +690,7 @@ func TestCsearchRootIndex(t *testing.T) {
 // in: a cindex newer than v1.2.0 writes format 2, which this backend used to
 // reject as "not a codesearch index".
 func TestCsearchReadsIndexFormat2(t *testing.T) {
+	t.Parallel()
 	indexFile, _ := newTestIndex(t, map[string]string{"a.go": "needle\n"})
 	data, err := os.ReadFile(indexFile)
 	if err != nil {
@@ -671,6 +712,7 @@ func TestCsearchReadsIndexFormat2(t *testing.T) {
 // and the results must still come out in index order, with every match of a
 // file together, exactly as a serial run gives them.
 func TestCsearchParallelGrepKeepsOrder(t *testing.T) {
+	t.Parallel()
 	const fileCount = 300
 	files := make(map[string]string, fileCount)
 	for i := range fileCount {
@@ -725,6 +767,7 @@ func TestCsearchParallelGrepKeepsOrder(t *testing.T) {
 // and exit the process. It is now an error. If the check is removed, this
 // test does not fail, it kills the test binary.
 func TestCsearchCorruptSectionOffsets(t *testing.T) {
+	t.Parallel()
 	indexFile, _ := newTestIndex(t, map[string]string{"a.go": "needle\n"})
 	good, err := os.ReadFile(indexFile)
 	if err != nil {
@@ -777,6 +820,7 @@ const format1Index = "testdata/index-format-1"
 
 // TestCsearchFormat1Fixture guards the fixture itself.
 func TestCsearchFormat1Fixture(t *testing.T) {
+	t.Parallel()
 	data, err := os.ReadFile(format1Index)
 	if err != nil {
 		t.Fatalf("failed to read fixture: %v", err)
@@ -789,6 +833,7 @@ func TestCsearchFormat1Fixture(t *testing.T) {
 // TestCsearchFormat1Filenames: the roots and the names of a format 1 index
 // are read correctly.
 func TestCsearchFormat1Filenames(t *testing.T) {
+	t.Parallel()
 	b := newCsearchBackend(t, format1Index)
 	for _, tt := range []struct {
 		pattern string
@@ -819,6 +864,7 @@ func TestCsearchFormat1Filenames(t *testing.T) {
 // candidate ends as a "skipping" warning, and the warnings say which files
 // the index proposed.
 func TestCsearchFormat1PostingLists(t *testing.T) {
+	t.Parallel()
 	b := newCsearchBackend(t, format1Index)
 	for _, tt := range []struct {
 		pattern string
@@ -829,9 +875,8 @@ func TestCsearchFormat1PostingLists(t *testing.T) {
 		{"package", []string{"/fixture/cmd/main.go", "/fixture/lib/haystack.go", "/fixture/lib/needle.go"}},
 		{"absent from every file", nil},
 	} {
-		hook := logrustest.NewGlobal()
-		results, err := b.Search(context.Background(), tt.pattern, SearchOptions{})
-		logrus.StandardLogger().ReplaceHooks(make(logrus.LevelHooks))
+		log, hook := logrustest.NewNullLogger()
+		results, err := b.Search(context.Background(), tt.pattern, SearchOptions{Log: log})
 		if err != nil {
 			t.Fatalf("%q: search failed: %v", tt.pattern, err)
 		}
@@ -853,6 +898,7 @@ func TestCsearchFormat1PostingLists(t *testing.T) {
 // TestCsearchFormat1CorruptOffsets: the section table check on a real format
 // 1 index, where the offsets are 4 bytes each.
 func TestCsearchFormat1CorruptOffsets(t *testing.T) {
+	t.Parallel()
 	good, err := os.ReadFile(format1Index)
 	if err != nil {
 		t.Fatalf("failed to read fixture: %v", err)

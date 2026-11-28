@@ -102,6 +102,7 @@ func (g *Gitlab) Supports(Capability) bool {
 }
 
 func (g *Gitlab) Search(ctx context.Context, searchString string, opts SearchOptions) (Results, error) {
+	log := opts.logger()
 	u, err := url.Parse(g.apiEndpoint)
 	if err != nil {
 		return nil, fmt.Errorf("failed to parse Gitlab API endpoint: %w", err)
@@ -151,12 +152,12 @@ func (g *Gitlab) Search(ctx context.Context, searchString string, opts SearchOpt
 	sopts := gitlab.SearchOptions{ListOptions: gitlab.ListOptions{PerPage: 100}}
 	for {
 		someBlobs, response, err := search(&sopts)
-		logrus.Debugf("Search response: %+v", response)
+		log.Debugf("Search response: %+v", response)
 		if err != nil {
 			if len(blobs) > 0 && gitlabIsRateLimit(response, err) {
 				// the pages fetched so far are still good, and dropping them
 				// would leave a broad search with no way to ever succeed
-				logrus.Warnf("Results are incomplete, rate limited after %d hits: %v", len(blobs), err)
+				log.Warnf("Results are incomplete, rate limited after %d hits: %v", len(blobs), err)
 				break
 			}
 			return nil, fmt.Errorf("failed to search blobs in %s: %w", scope, err)
@@ -166,37 +167,37 @@ func (g *Gitlab) Search(ctx context.Context, searchString string, opts SearchOpt
 			break
 		}
 		if opts.Limit > 0 && uint(len(blobs)) >= opts.Limit {
-			logrus.Debugf("Stopping after %d blobs, enough for a limit of %d", len(blobs), opts.Limit)
+			log.Debugf("Stopping after %d blobs, enough for a limit of %d", len(blobs), opts.Limit)
 			break
 		}
 		sopts.Page = response.NextPage
 	}
-	return g.toResult(client, withCtx, searchString, blobs, opts)
+	return g.toResult(log, client, withCtx, searchString, blobs, opts)
 }
 
-func (g *Gitlab) toResult(client *gitlab.Client, withCtx gitlab.RequestOptionFunc, searchString string, blobs []*gitlab.Blob, opts SearchOptions) (Results, error) {
-	projects, err := g.fetchProjects(client, withCtx, blobs)
+func (g *Gitlab) toResult(log logrus.FieldLogger, client *gitlab.Client, withCtx gitlab.RequestOptionFunc, searchString string, blobs []*gitlab.Blob, opts SearchOptions) (Results, error) {
+	projects, err := g.fetchProjects(log, client, withCtx, blobs)
 	if err != nil {
 		return nil, err
 	}
 	var results Results
 	for _, blob := range blobs {
-		logrus.Debugf("Result:")
-		logrus.Debugf("  Basename: %s:", blob.Basename)
-		logrus.Debugf("  Data: %s:", blob.Data)
-		logrus.Debugf("  Path: %s:", blob.Path)
-		logrus.Debugf("  Filename: %s:", blob.Filename)
-		logrus.Debugf("  ID: %s", blob.ID)
-		logrus.Debugf("  Ref: %s", blob.Ref)
-		logrus.Debugf("  Startline: %d", blob.Startline)
-		logrus.Debugf("  ProjectID: %d", blob.ProjectID)
+		log.Debugf("Result:")
+		log.Debugf("  Basename: %s:", blob.Basename)
+		log.Debugf("  Data: %s:", blob.Data)
+		log.Debugf("  Path: %s:", blob.Path)
+		log.Debugf("  Filename: %s:", blob.Filename)
+		log.Debugf("  ID: %s", blob.ID)
+		log.Debugf("  Ref: %s", blob.Ref)
+		log.Debugf("  Startline: %d", blob.Startline)
+		log.Debugf("  ProjectID: %d", blob.ProjectID)
 
 		project, ok := projects[blob.ProjectID]
 		if !ok {
 			// a rate limit stopped fetchProjects before it got to this one
 			continue
 		}
-		logrus.Debugf("  Project Name: %s", project.Name)
+		log.Debugf("  Project Name: %s", project.Name)
 
 		// a project without a namespace should not happen, but the field is
 		// a pointer and a crash would lose every other result
@@ -265,7 +266,7 @@ const gitlabProjectConcurrency = 8
 // one request per project; these are independent, so they are made in
 // parallel. The error returned is the one of the first project in blob order
 // that failed, as a serial run would report.
-func (g *Gitlab) fetchProjects(client *gitlab.Client, withCtx gitlab.RequestOptionFunc, blobs []*gitlab.Blob) (map[int64]*gitlab.Project, error) {
+func (g *Gitlab) fetchProjects(log logrus.FieldLogger, client *gitlab.Client, withCtx gitlab.RequestOptionFunc, blobs []*gitlab.Blob) (map[int64]*gitlab.Project, error) {
 	var ids []int64
 	seen := make(map[int64]bool)
 	for _, blob := range blobs {
@@ -294,7 +295,7 @@ func (g *Gitlab) fetchProjects(client *gitlab.Client, withCtx gitlab.RequestOpti
 			defer wg.Done()
 			defer func() { <-slots }()
 			project, response, err := client.Projects.GetProject(id, &gitlab.GetProjectOptions{}, withCtx)
-			logrus.Debugf("Projects.GetProject response: %+v", response)
+			log.Debugf("Projects.GetProject response: %+v", response)
 			if err != nil {
 				errs[i] = fmt.Errorf("failed to get project with ID %d: %w", id, err)
 				rateLimited[i] = gitlabIsRateLimit(response, err)
@@ -318,7 +319,7 @@ func (g *Gitlab) fetchProjects(client *gitlab.Client, withCtx gitlab.RequestOpti
 		if rateLimited[i] && len(projects) > 0 {
 			// the same reasoning as for the search pages: what was fetched
 			// is still good. The caller drops the blobs of the other projects.
-			logrus.Warnf("Results are incomplete, rate limited after %d of %d projects: %v", len(projects), len(ids), errs[i])
+			log.Warnf("Results are incomplete, rate limited after %d of %d projects: %v", len(projects), len(ids), errs[i])
 			break
 		}
 		return nil, errs[i]
