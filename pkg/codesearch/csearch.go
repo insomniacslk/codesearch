@@ -207,56 +207,12 @@ func (g *Csearch) Search(ctx context.Context, searchString string, opts SearchOp
 		return nil, err
 	}
 	if opts.SearchInFilenames {
-		// get all the file names instead of doing a search on the cindex
 		logrus.Debugf("Searching in file names")
 		re, err := goregexp.Compile(pattern)
 		if err != nil {
 			return nil, fmt.Errorf("failed to compile pattern for indexing: %w", err)
 		}
-		var results Results
-		for _, indexedPath := range indexRoots(ix) {
-			// results are appended as the walk visits them, which is lexical
-			// order, so that --limit picks the same subset on every run
-			err = filepath.Walk(indexedPath, func(path string, info os.FileInfo, err error) error {
-				// a big tree takes a long time to walk, and the walk is the
-				// only thing that can notice --timeout or Ctrl-C
-				if ctxErr := ctx.Err(); ctxErr != nil {
-					return ctxErr
-				}
-				// info is nil whenever err is set, which happens for
-				// directories that cannot be read. Skip them rather than
-				// aborting the whole walk.
-				if err != nil {
-					logrus.Debugf("Skipping %q: %v", path, err)
-					return nil
-				}
-				if info.IsDir() {
-					return nil
-				}
-				shortName := removePathPrefix(path, indexedPath)
-				if !re.MatchString(shortName) {
-					return nil
-				}
-				logrus.Debugf("indexPath=%s path=%s shortName=%s", indexedPath, path, shortName)
-				results = append(results, Result{
-					Backend:    g.Name(),
-					Path:       shortName,
-					RepoURL:    "file://" + indexedPath,
-					FileURL:    "file://" + path,
-					Owner:      "",
-					RepoName:   indexedPath,
-					IsFilename: true,
-				})
-				return nil
-			})
-			if err != nil {
-				if ctxErr := ctx.Err(); ctxErr != nil {
-					return nil, ctxErr
-				}
-				return nil, fmt.Errorf("failed to walk the source tree: %w", err)
-			}
-		}
-		return results, nil
+		return g.searchFilenames(ctx, ix, re)
 	}
 	re, err := regexp.Compile(pattern)
 	if err != nil {
@@ -265,6 +221,63 @@ func (g *Csearch) Search(ctx context.Context, searchString string, opts SearchOp
 	q := index.RegexpQuery(re.Syntax)
 	post := ix.PostingQuery(q)
 	return g.toResult(ctx, pattern, ix, post, opts)
+}
+
+// searchFilenames matches re against the name of every file in the index.
+// The names come from the index itself, which is the list of what cindex
+// indexed: walking the roots instead takes far longer on a big tree, and also
+// reports files that the index does not hold, such as binaries and the
+// content of .git directories.
+func (g *Csearch) searchFilenames(ctx context.Context, ix *index.Index, re *goregexp.Regexp) (Results, error) {
+	roots := indexRoots(ix)
+	// the posting list of "every file" is the only exported way to learn how
+	// many names the index holds
+	count := len(ix.PostingQuery(&index.Query{Op: index.QAll}))
+	var (
+		results Results
+		seen    int
+	)
+	for path := range ix.Names(0, count) {
+		// a big index takes a while to go through, and this loop is the only
+		// thing that can notice --timeout or Ctrl-C
+		if seen++; seen%1024 == 1 {
+			if err := ctx.Err(); err != nil {
+				return nil, err
+			}
+		}
+		name := path.String()
+		indexedPath := longestRoot(roots, name)
+		if indexedPath == "" {
+			return nil, fmt.Errorf("no indexed path found for %q", name)
+		}
+		shortName := removePathPrefix(name, indexedPath)
+		if !re.MatchString(shortName) {
+			continue
+		}
+		results = append(results, Result{
+			Backend:    g.Name(),
+			Path:       shortName,
+			RepoURL:    "file://" + indexedPath,
+			FileURL:    "file://" + name,
+			Owner:      "",
+			RepoName:   indexedPath,
+			IsFilename: true,
+		})
+	}
+	return results, nil
+}
+
+// longestRoot returns the indexed root that name sits under, preferring the
+// longest one so that nested roots resolve to the deeper one. It returns ""
+// when there is none.
+func longestRoot(roots []string, name string) string {
+	var root string
+	for _, p := range roots {
+		if hasPathPrefix(name, p) && len(p) > len(root) {
+			root = p
+		}
+	}
+	return root
 }
 
 // csearchJob is the grep of one candidate file. The fields below done are set
@@ -415,14 +428,7 @@ func (w *csearchGrepper) file(name string) (results Results, warning string, err
 		// no output, no error: the index gave a false positive
 		return nil, "", nil
 	}
-	// find the indexed path this file sits under, preferring the
-	// longest match so nested indexed roots resolve to the deeper one
-	var indexedPath string
-	for _, p := range w.roots {
-		if hasPathPrefix(name, p) && len(p) > len(indexedPath) {
-			indexedPath = p
-		}
-	}
+	indexedPath := longestRoot(w.roots, name)
 	if indexedPath == "" {
 		return nil, "", fmt.Errorf("no indexed path found for %q", name)
 	}

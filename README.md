@@ -70,6 +70,11 @@ different query.
 Note that GitLab still reports matches that occur in a file name as part of an
 ordinary search, it just has no file-name-only mode to select with `-F`.
 
+On the Csearch backend, `-F` matches against the file names stored in the index.
+It therefore lists what `cindex` indexed, as of the last time it ran: files that
+`cindex` skips (hidden files and directories, binaries, very large files) are
+not found, and a file deleted since then still is.
+
 Other general features:
 * [ ] Common syntax for all backends
 * [ ] Server-side search
