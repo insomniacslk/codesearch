@@ -201,7 +201,7 @@ const defaultSecondaryRateLimitDelay = time.Minute
 // worth retrying at all.
 //
 // Primary rate limits are not. They mean the quota for a whole window is spent,
-// and the window is long compared to a single command: 30 requests a minute for
+// and the window is long compared to a single command: 10 requests a minute for
 // code search, an hour for the core API. Waiting one out would hang the search
 // for minutes and then spend the fresh quota on the same query that exhausted
 // it, so it is reported immediately and the caller can decide when to come
