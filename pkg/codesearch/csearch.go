@@ -256,7 +256,7 @@ func (g *Csearch) Search(ctx context.Context, searchString string, opts SearchOp
 		if err != nil {
 			return nil, fmt.Errorf("failed to compile pattern for indexing: %w", err)
 		}
-		return g.searchFilenames(ctx, ix, re)
+		return g.searchFilenames(ctx, log, ix, re)
 	}
 	re, err := regexp.Compile(pattern)
 	if err != nil {
@@ -272,7 +272,7 @@ func (g *Csearch) Search(ctx context.Context, searchString string, opts SearchOp
 // indexed: walking the roots instead takes far longer on a big tree, and also
 // reports files that the index does not hold, such as binaries and the
 // content of .git directories.
-func (g *Csearch) searchFilenames(ctx context.Context, ix *index.Index, re *goregexp.Regexp) (Results, error) {
+func (g *Csearch) searchFilenames(ctx context.Context, log logrus.FieldLogger, ix *index.Index, re *goregexp.Regexp) (Results, error) {
 	roots := indexRoots(ix)
 	// the posting list of "every file" is the only exported way to learn how
 	// many names the index holds
@@ -290,7 +290,10 @@ func (g *Csearch) searchFilenames(ctx context.Context, ix *index.Index, re *gore
 			}
 		}
 		name := path.String()
-		indexedPath := rootOf(roots, name)
+		indexedPath, ok := rootOf(roots, name)
+		if !ok {
+			log.Debugf("%q is under none of the index roots, using %q as its root", name, indexedPath)
+		}
 		shortName := removePathPrefix(name, indexedPath)
 		if !re.MatchString(shortName) {
 			continue
@@ -328,9 +331,13 @@ func longestRoot(roots []string, name string) string {
 // stay in the index. Such a root is rebuilt from the file name: it is the root
 // that is a string prefix of the name, extended to the end of the path
 // component. A file that no root explains at all gets its directory.
-func rootOf(roots []string, name string) string {
+//
+// A rebuilt root is a best estimate: the index does not say how deep the
+// dropped root was, so "/src/repo-mail/sub" comes back as "/src/repo-mail".
+// The second value reports whether the root is one that the index holds.
+func rootOf(roots []string, name string) (string, bool) {
 	if root := longestRoot(roots, name); root != "" {
-		return root
+		return root, true
 	}
 	var prefix string
 	for _, p := range roots {
@@ -341,10 +348,10 @@ func rootOf(roots []string, name string) string {
 	}
 	if prefix != "" {
 		if end := strings.IndexByte(name[len(prefix):], '/'); end > 0 {
-			return name[:len(prefix)+end]
+			return name[:len(prefix)+end], false
 		}
 	}
-	return filepath.Dir(name)
+	return filepath.Dir(name), false
 }
 
 // csearchJob is the grep of one candidate file. The fields below done are set
@@ -498,7 +505,10 @@ func (w *csearchGrepper) file(name string) (results Results, warning string, err
 		// no output, no error: the index gave a false positive
 		return nil, "", nil
 	}
-	indexedPath := rootOf(w.roots, name)
+	indexedPath, ok := rootOf(w.roots, name)
+	if !ok {
+		w.opts.logger().Debugf("%q is under none of the index roots, using %q as its root", name, indexedPath)
+	}
 	shortName := removePathPrefix(name, indexedPath)
 	// read the file once for all of its matches, not once per match
 	var fileLines []string

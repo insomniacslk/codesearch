@@ -924,15 +924,21 @@ func TestRootOf(t *testing.T) {
 		{"/src/repo/a.go", "/src/repo"},
 		{"/src/repo/vendor/lib/b.go", "/src/repo/vendor/lib"},
 		{"/other/c.go", "/other/"},
-		// the root that cindex dropped behind "/src/repo"
+		// the root that cindex dropped behind "/src/repo"; a deeper dropped
+		// root comes back as its first component
+		{"/src/repo-mail/sub/g.go", "/src/repo-mail"},
 		{"/src/repo-mail/docs/d.md", "/src/repo-mail"},
 		{"/src/repo2/e.go", "/src/repo2"},
 		// a file directly next to a root has no component to extend to
 		{"/src/repo.txt", "/src"},
 		{"/elsewhere/f.go", "/elsewhere"},
 	} {
-		if got := rootOf(roots, tc.name); got != tc.want {
+		got, held := rootOf(roots, tc.name)
+		if got != tc.want {
 			t.Errorf("rootOf(%q) = %q, want %q", tc.name, got, tc.want)
+		}
+		if wantHeld := longestRoot(roots, tc.name) != ""; held != wantHeld {
+			t.Errorf("rootOf(%q) reports held=%v, want %v", tc.name, held, wantHeld)
 		}
 	}
 }
